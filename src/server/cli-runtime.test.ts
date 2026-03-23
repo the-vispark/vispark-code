@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { compareVersions, parseArgs, runCli } from "./cli-runtime"
+import { compareVersions, getInstallTarget, parseArgs, runCli } from "./cli-runtime"
 
 function createDeps(overrides: Partial<Parameters<typeof runCli>[1]> = {}) {
   const calls = {
@@ -83,6 +83,12 @@ describe("compareVersions", () => {
     expect(compareVersions("0.3.0", "0.3.0")).toBe(0)
     expect(compareVersions("0.3.0", "0.3.1")).toBe(-1)
     expect(compareVersions("1.0.0", "0.9.9")).toBe(1)
+  })
+})
+
+describe("getInstallTarget", () => {
+  test("pins the global upgrade to the named GitHub package", () => {
+    expect(getInstallTarget("vispark-code")).toBe("vispark-code@github:the-vispark/vispark-code")
   })
 })
 

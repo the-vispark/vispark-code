@@ -40,6 +40,7 @@ type ParsedArgs =
   | { kind: "version" }
 
 const MINIMUM_BUN_VERSION = "1.3.5"
+const PACKAGE_SOURCE = "github:the-vispark/vispark-code"
 
 function printHelp() {
   console.log(`${APP_NAME} — local-only project chat UI
@@ -220,9 +221,15 @@ export async function fetchLatestPackageVersion(_packageName: string) {
   return payload.version
 }
 
-export function installLatestPackage(_packageName: string) {
+export function getInstallTarget(packageName: string) {
+  return `${packageName}@${PACKAGE_SOURCE}`
+}
+
+export function installLatestPackage(packageName: string) {
   if (!hasCommand("bun")) return false
-  const result = spawnSync("bun", ["install", "-g", "github:the-vispark/vispark-code"], { stdio: "inherit" })
+  // Use an explicit package name so Bun upgrades the existing global dependency
+  // instead of treating the GitHub repo as an anonymous package and looping.
+  const result = spawnSync("bun", ["install", "-g", getInstallTarget(packageName)], { stdio: "inherit" })
   return result.status === 0
 }
 
