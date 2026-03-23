@@ -28,9 +28,16 @@ interface PromptDialogOptions {
   cancelLabel?: string
 }
 
+interface AlertDialogOptions {
+  title: string
+  description?: string
+  closeLabel?: string
+}
+
 interface AppDialogContextValue {
   confirm: (options: ConfirmDialogOptions) => Promise<boolean>
   prompt: (options: PromptDialogOptions) => Promise<string | null>
+  alert: (options: AlertDialogOptions) => Promise<void>
 }
 
 type DialogState =
@@ -43,6 +50,11 @@ type DialogState =
       kind: "prompt"
       options: PromptDialogOptions
       resolve: (value: string | null) => void
+    }
+  | {
+      kind: "alert"
+      options: AlertDialogOptions
+      resolve: () => void
     }
 
 const AppDialogContext = createContext<AppDialogContextValue | null>(null)
@@ -66,6 +78,30 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
     setInputValue("")
   }, [])
 
+  const resolveCancel = useCallback(() => {
+    if (!dialogState) return
+    if (dialogState.kind === "confirm") {
+      dialogState.resolve(false)
+    } else if (dialogState.kind === "prompt") {
+      dialogState.resolve(null)
+    } else {
+      dialogState.resolve()
+    }
+    closeDialog()
+  }, [closeDialog, dialogState])
+
+  const resolveConfirm = useCallback(() => {
+    if (!dialogState) return
+    if (dialogState.kind === "confirm") {
+      dialogState.resolve(true)
+    } else if (dialogState.kind === "prompt") {
+      dialogState.resolve(inputValue.trim() || null)
+    } else {
+      dialogState.resolve()
+    }
+    closeDialog()
+  }, [closeDialog, dialogState, inputValue])
+
   const confirm = useCallback((options: ConfirmDialogOptions) => {
     return new Promise<boolean>((resolve) => {
       setDialogState({ kind: "confirm", options, resolve })
@@ -78,7 +114,13 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
-  const value = useMemo<AppDialogContextValue>(() => ({ confirm, prompt }), [confirm, prompt])
+  const alert = useCallback((options: AlertDialogOptions) => {
+    return new Promise<void>((resolve) => {
+      setDialogState({ kind: "alert", options, resolve })
+    })
+  }, [])
+
+  const value = useMemo<AppDialogContextValue>(() => ({ confirm, prompt, alert }), [alert, confirm, prompt])
 
   return (
     <AppDialogContext.Provider value={value}>
@@ -87,15 +129,17 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
         open={dialogState !== null}
         onOpenChange={(open) => {
           if (open || !dialogState) return
-          if (dialogState.kind === "confirm") {
-            dialogState.resolve(false)
-          } else {
-            dialogState.resolve(null)
-          }
-          closeDialog()
+          resolveCancel()
         }}
       >
-        <DialogContent size="sm">
+        <DialogContent
+          size="sm"
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" || event.shiftKey || !dialogState || dialogState.kind !== "confirm") return
+            event.preventDefault()
+            resolveConfirm()
+          }}
+        >
           {dialogState ? (
             <>
               <DialogBody className="space-y-4">
@@ -112,8 +156,7 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
                     onKeyDown={(event) => {
                       if (event.key === "Enter") {
                         event.preventDefault()
-                        dialogState.resolve(inputValue.trim() || null)
-                        closeDialog()
+                        resolveConfirm()
                       }
                     }}
                     className="w-full px-3 py-2 text-sm border border-border rounded-md bg-background outline-none"
@@ -125,31 +168,22 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => {
-                    if (dialogState.kind === "confirm") {
-                      dialogState.resolve(false)
-                    } else {
-                      dialogState.resolve(null)
-                    }
-                    closeDialog()
-                  }}
+                  onClick={resolveCancel}
+                  className={dialogState.kind === "alert" ? "hidden" : undefined}
                 >
-                  {dialogState.options.cancelLabel ?? "Cancel"}
+                  {"cancelLabel" in dialogState.options ? (dialogState.options.cancelLabel ?? "Cancel") : "Cancel"}
                 </Button>
                 <Button
                   variant={dialogState.kind === "confirm" ? (dialogState.options.confirmVariant ?? "default") : "secondary"}
                   size="sm"
-                  onClick={() => {
-                    if (dialogState.kind === "confirm") {
-                      dialogState.resolve(true)
-                    } else {
-                      dialogState.resolve(inputValue.trim() || null)
-                    }
-                    closeDialog()
-                  }}
+                  onClick={resolveConfirm}
                   disabled={dialogState.kind === "prompt" && !inputValue.trim()}
                 >
-                  {dialogState.options.confirmLabel ?? "Confirm"}
+                  {dialogState.kind === "alert"
+                    ? (dialogState.options.closeLabel ?? "OK")
+                    : "confirmLabel" in dialogState.options
+                      ? (dialogState.options.confirmLabel ?? "Confirm")
+                      : "Confirm"}
                 </Button>
               </DialogFooter>
             </>

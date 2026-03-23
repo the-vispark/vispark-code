@@ -22,6 +22,13 @@ export interface ExitedCli {
 
 export type CliRunResult = StartedCli | ExitedCli
 
+export interface UpdateInstallAttemptResult {
+  ok: boolean
+  errorCode: "version_not_live_yet" | "install_failed" | "command_missing" | null
+  userTitle: string | null
+  userMessage: string | null
+}
+
 export interface CliRuntimeDeps {
   version: string
   bunVersion: string

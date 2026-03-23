@@ -128,7 +128,6 @@ export class VisparkCodeSocket {
       handlers.onEvent
     )
   }
-
   subscribeTerminal(
     terminalId: string,
     handlers: {

@@ -13,7 +13,7 @@ function spawnLabeledProcess(label: string, args: string[]) {
     stdio: "inherit",
     env: {
       ...process.env,
-      KANNA_DISABLE_SELF_UPDATE: "1",
+      "VISPARK-CODE_DISABLE_SELF_UPDATE": "1",
       VISPARK_DEV_CLIENT_PORT: String(DEV_CLIENT_PORT),
     },
   })
@@ -26,7 +26,19 @@ function spawnLabeledProcess(label: string, args: string[]) {
 }
 
 const client = spawnLabeledProcess("client", ["x", "vite", "--host", "0.0.0.0", "--port", String(DEV_CLIENT_PORT), "--strictPort"])
-const server = spawnLabeledProcess("server", ["run", "./src/server/cli.ts", "--no-open", "--port", String(DEV_SERVER_PORT), "--strict-port", ...forwardedArgs])
+const server = spawn(bunBin, ["run", "./scripts/dev-server.ts", "--no-open", "--port", String(DEV_SERVER_PORT), "--strict-port", ...forwardedArgs], {
+  cwd,
+  stdio: "inherit",
+  env: {
+    ...process.env,
+    "VISPARK-CODE_DISABLE_SELF_UPDATE": "1",
+    VISPARK_DEV_CLIENT_PORT: String(DEV_CLIENT_PORT),
+  },
+})
+
+server.on("spawn", () => {
+  console.log(`${LOG_PREFIX.replace("]", ":server]")} started`)
+})
 
 const children = [client, server]
 let shuttingDown = false

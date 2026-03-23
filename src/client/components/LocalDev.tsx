@@ -11,7 +11,7 @@ import {
   SquarePen,
   Terminal,
 } from "lucide-react"
-import { APP_NAME, getCliInvocation, SDK_CLIENT_APP } from "../../shared/branding"
+import { APP_NAME, getCliInvocation } from "../../shared/branding"
 import type { LocalProjectsSnapshot } from "../../shared/types"
 import type { SocketStatus } from "../app/socket"
 import { PageHeader } from "../app/PageHeader"

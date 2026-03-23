@@ -1,17 +1,20 @@
 import type { ServerWebSocket } from "bun"
-import { PROTOCOL_VERSION } from "../shared/types"
 import type { ClientEnvelope, ServerEnvelope, SubscriptionTopic } from "../shared/protocol"
 import { isClientEnvelope } from "../shared/protocol"
+import { PROTOCOL_VERSION } from "../shared/types"
 import type { AgentCoordinator } from "./agent"
 import type { AppSettingsStore } from "./app-settings"
 import type { DiscoveredProject } from "./discovery"
 import { EventStore } from "./event-store"
+import { pickDirectory } from "./directory-picker"
 import { openExternal } from "./external-open"
 import { FileTreeManager } from "./file-tree-manager"
+import { KeybindingsManager } from "./keybindings"
 import { ensureProjectDirectory } from "./paths"
+import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveSidebarData } from "./read-models"
 import { clearSourceSyncData } from "./source-sync"
 import { TerminalManager } from "./terminal-manager"
-import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveSidebarData } from "./read-models"
+import type { UpdateManager } from "./update-manager"
 
 export interface ClientState {
   subscriptions: Map<string, SubscriptionTopic>
@@ -19,13 +22,15 @@ export interface ClientState {
 
 interface CreateWsRouterArgs {
   store: EventStore
-  settings: AppSettingsStore
+  settings?: AppSettingsStore
   agent: AgentCoordinator
   terminals: TerminalManager
-  fileTree: FileTreeManager
+  keybindings: KeybindingsManager
+  fileTree?: FileTreeManager
   refreshDiscovery: () => Promise<DiscoveredProject[]>
   getDiscoveredProjects: () => DiscoveredProject[]
   machineDisplayName: string
+  updateManager?: UpdateManager | null
   clearCachedSourceData?: () => void
 }
 
@@ -35,13 +40,34 @@ function send(ws: ServerWebSocket<ClientState>, message: ServerEnvelope) {
 
 export function createWsRouter({
   store,
-  settings,
+  settings = {
+    getSnapshot: () => ({
+      visionApiKey: "",
+      visionContinualLearningWeightsPath: "",
+    }),
+    updateVisionApiKey: () => {},
+    reset: () => {},
+  } as unknown as AppSettingsStore,
   agent,
   terminals,
-  fileTree,
+  keybindings,
+  fileTree = {
+    getSnapshot: () => null,
+    readDirectory: async () => ({
+      directoryPath: "",
+      entries: [],
+      nextCursor: null,
+      hasMore: false,
+    }),
+    subscribe: () => {},
+    unsubscribe: () => {},
+    onInvalidate: () => () => {},
+    dispose: () => {},
+  } as unknown as FileTreeManager,
   refreshDiscovery,
   getDiscoveredProjects,
   machineDisplayName,
+  updateManager = null,
   clearCachedSourceData = clearSourceSyncData,
 }: CreateWsRouterArgs) {
   const sockets = new Set<ServerWebSocket<ClientState>>()
@@ -82,6 +108,38 @@ export function createWsRouter({
         snapshot: {
           type: "settings",
           data: settings.getSnapshot(),
+        },
+      }
+    }
+
+    if (topic.type === "keybindings") {
+      return {
+        v: PROTOCOL_VERSION,
+        type: "snapshot",
+        id,
+        snapshot: {
+          type: "keybindings",
+          data: keybindings.getSnapshot(),
+        },
+      }
+    }
+
+    if (topic.type === "update") {
+      return {
+        v: PROTOCOL_VERSION,
+        type: "snapshot",
+        id,
+        snapshot: {
+          type: "update",
+          data: updateManager?.getSnapshot() ?? {
+            currentVersion: "unknown",
+            latestVersion: null,
+            status: "idle",
+            updateAvailable: false,
+            lastCheckedAt: null,
+            error: null,
+            installAction: "restart",
+          },
         },
       }
     }
@@ -174,6 +232,24 @@ export function createWsRouter({
     }
   })
 
+  const disposeKeybindingEvents = keybindings.onChange(() => {
+    for (const ws of sockets) {
+      for (const [id, topic] of ws.data.subscriptions.entries()) {
+        if (topic.type !== "keybindings") continue
+        send(ws, createEnvelope(id, topic))
+      }
+    }
+  })
+
+  const disposeUpdateEvents = updateManager?.onChange(() => {
+    for (const ws of sockets) {
+      for (const [id, topic] of ws.data.subscriptions.entries()) {
+        if (topic.type !== "update") continue
+        send(ws, createEnvelope(id, topic))
+      }
+    }
+  }) ?? (() => {})
+
   async function handleCommand(ws: ServerWebSocket<ClientState>, message: Extract<ClientEnvelope, { type: "command" }>) {
     const { command, id } = message
     try {
@@ -184,6 +260,43 @@ export function createWsRouter({
         }
         case "settings.get": {
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: settings.getSnapshot() })
+          return
+        }
+        case "update.check": {
+          const snapshot = updateManager
+            ? await updateManager.checkForUpdates({ force: command.force })
+            : {
+                currentVersion: "unknown",
+                latestVersion: null,
+                status: "error",
+                updateAvailable: false,
+                lastCheckedAt: Date.now(),
+                error: "Update manager unavailable.",
+                installAction: "restart",
+              }
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
+          return
+        }
+        case "update.install": {
+          if (!updateManager) {
+            throw new Error("Update manager unavailable.")
+          }
+          const result = await updateManager.installUpdate()
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          return
+        }
+        case "settings.readKeybindings": {
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: keybindings.getSnapshot() })
+          return
+        }
+        case "settings.writeKeybindings": {
+          const snapshot = await keybindings.write(command.bindings)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
+          return
+        }
+        case "system.pickDirectory": {
+          const result = await pickDirectory(command.title)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           return
         }
         case "settings.updateVision": {
@@ -370,6 +483,8 @@ export function createWsRouter({
     dispose() {
       disposeTerminalEvents()
       disposeFileTreeEvents()
+      disposeKeybindingEvents()
+      disposeUpdateEvents()
     },
   }
 }

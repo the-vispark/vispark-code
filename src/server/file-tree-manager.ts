@@ -1,4 +1,4 @@
-import { readdir, watch, type FSWatcher } from "node:fs"
+import { readdir, statSync, watch, type FSWatcher } from "node:fs"
 import { lstat, realpath } from "node:fs/promises"
 import path from "node:path"
 import { spawnSync } from "node:child_process"
@@ -8,6 +8,7 @@ import type { FileTreeDirectoryPage, FileTreeSnapshot } from "../shared/types"
 const DEFAULT_PAGE_SIZE = 200
 const MAX_PAGE_SIZE = 500
 const INVALIDATION_DEBOUNCE_MS = 90
+const DIRECTORY_POLL_INTERVAL_MS = 150
 
 interface ProjectLookup {
   localPath: string
@@ -15,9 +16,18 @@ interface ProjectLookup {
 
 interface ProjectRuntime {
   subscriberCount: number
-  watchers: Map<string, FSWatcher>
+  watchers: Map<string, WatchedDirectoryRuntime>
   pendingInvalidations: Set<string>
   invalidateTimer: Timer | null
+}
+
+interface WatchedDirectoryRuntime {
+  absolutePath: string
+  watcher: FSWatcher | null
+  pollTimer: Timer
+  pollInFlight: boolean
+  lastKnownExists: boolean
+  lastKnownMtimeMs: number | null
 }
 
 interface GitIgnoreCacheEntry {
@@ -224,17 +234,61 @@ export class FileTreeManager {
 
     const project = this.requireProject(projectId)
     const absolutePath = resolveProjectPath(project.localPath, directoryPath)
-    const watcher = watch(absolutePath, { persistent: false }, () => {
-      this.queueInvalidation(projectId, directoryPath)
-    })
+    const initialDirectoryState = readDirectoryMtime(absolutePath)
+    let watcher: FSWatcher | null = null
 
-    watcher.on("error", () => {
-      this.queueInvalidation(projectId, directoryPath)
-      watcher.close()
-      runtime.watchers.delete(directoryPath)
-    })
+    try {
+      watcher = watch(absolutePath, { persistent: false }, () => {
+        this.queueInvalidation(projectId, directoryPath)
+      })
 
-    runtime.watchers.set(directoryPath, watcher)
+      watcher.on("error", () => {
+        this.queueInvalidation(projectId, directoryPath)
+        watcher?.close()
+        const watchedDirectory = runtime.watchers.get(directoryPath)
+        if (watchedDirectory) {
+          watchedDirectory.watcher = null
+        }
+      })
+    } catch {
+      watcher = null
+    }
+
+    const watchedDirectory: WatchedDirectoryRuntime = {
+      absolutePath,
+      watcher,
+      pollTimer: setInterval(() => {
+        void this.pollWatchedDirectory(projectId, directoryPath)
+      }, DIRECTORY_POLL_INTERVAL_MS),
+      pollInFlight: false,
+      lastKnownExists: initialDirectoryState.exists,
+      lastKnownMtimeMs: initialDirectoryState.mtimeMs,
+    }
+
+    runtime.watchers.set(directoryPath, watchedDirectory)
+  }
+
+  private async pollWatchedDirectory(projectId: string, directoryPath: string) {
+    const runtime = this.projectRuntimes.get(projectId)
+    const watchedDirectory = runtime?.watchers.get(directoryPath)
+    if (!runtime || !watchedDirectory || watchedDirectory.pollInFlight) return
+
+    watchedDirectory.pollInFlight = true
+    try {
+      const stat = await lstat(watchedDirectory.absolutePath).catch(() => null)
+      const exists = stat !== null
+      const mtimeMs = stat?.mtimeMs ?? null
+
+      if (exists === watchedDirectory.lastKnownExists && mtimeMs === watchedDirectory.lastKnownMtimeMs) {
+        return
+      }
+
+      watchedDirectory.lastKnownExists = exists
+      watchedDirectory.lastKnownMtimeMs = mtimeMs
+      this.queueInvalidation(projectId, directoryPath)
+    } finally {
+      watchedDirectory.pollInFlight = false
+    }
   }
 
   private queueInvalidation(projectId: string, directoryPath: string) {
@@ -262,8 +316,9 @@ export class FileTreeManager {
   private disposeRuntime(projectId: string) {
     const runtime = this.projectRuntimes.get(projectId)
     if (!runtime) return
-    for (const watcher of runtime.watchers.values()) {
-      watcher.close()
+    for (const watchedDirectory of runtime.watchers.values()) {
+      watchedDirectory.watcher?.close()
+      clearInterval(watchedDirectory.pollTimer)
     }
     runtime.watchers.clear()
     if (runtime.invalidateTimer) {
@@ -373,4 +428,12 @@ function compareCandidates(left: DirectoryCandidate, right: DirectoryCandidate) 
 function getExtension(name: string) {
   const extension = path.extname(name)
   return extension ? extension.slice(1).toLowerCase() : undefined
+}
+
+function readDirectoryMtime(absolutePath: string) {
+  const stat = statSync(absolutePath, { throwIfNoEntry: false })
+  return {
+    exists: stat !== undefined,
+    mtimeMs: stat?.mtimeMs ?? null,
+  }
 }

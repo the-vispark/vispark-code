@@ -4,9 +4,11 @@ import type {
   ChatSnapshot,
   FileTreeDirectoryPage,
   FileTreeSnapshot,
+  KeybindingsSnapshot,
   LocalProjectsSnapshot,
   ModelOptions,
   SidebarData,
+  UpdateSnapshot,
 } from "./types"
 
 export type EditorPreset = "cursor" | "vscode" | "windsurf" | "custom"
@@ -21,6 +23,8 @@ export type SubscriptionTopic =
   | { type: "local-projects" }
   | { type: "settings" }
   | { type: "file-tree"; projectId: string }
+  | { type: "update" }
+  | { type: "keybindings" }
   | { type: "chat"; chatId: string }
   | { type: "terminal"; terminalId: string }
 
@@ -42,6 +46,12 @@ export type TerminalEvent =
   | { type: "terminal.output"; terminalId: string; data: string }
   | { type: "terminal.exit"; terminalId: string; exitCode: number; signal?: number }
 
+export type FileTreeEvent = {
+  type: "file-tree.invalidate"
+  projectId: string
+  directoryPaths: string[]
+}
+
 export type ClientCommand =
   | { type: "project.open"; localPath: string }
   | { type: "project.create"; localPath: string; title: string }
@@ -50,6 +60,11 @@ export type ClientCommand =
   | { type: "settings.get" }
   | { type: "settings.updateVision"; visionApiKey: string }
   | { type: "settings.resetAll" }
+  | { type: "update.check"; force?: boolean }
+  | { type: "update.install" }
+  | { type: "settings.readKeybindings" }
+  | { type: "settings.writeKeybindings"; bindings: KeybindingsSnapshot["bindings"] }
+  | { type: "system.pickDirectory"; title?: string }
   | {
       type: "system.openExternal"
       localPath: string
@@ -96,14 +111,10 @@ export type ServerSnapshot =
   | { type: "local-projects"; data: LocalProjectsSnapshot }
   | { type: "settings"; data: AppSettingsSnapshot }
   | { type: "file-tree"; data: FileTreeSnapshot | null }
+  | { type: "update"; data: UpdateSnapshot }
+  | { type: "keybindings"; data: KeybindingsSnapshot }
   | { type: "chat"; data: ChatSnapshot | null }
   | { type: "terminal"; data: TerminalSnapshot | null }
-
-export type FileTreeEvent = {
-  type: "file-tree.invalidate"
-  projectId: string
-  directoryPaths: string[]
-}
 
 export type ServerEnvelope =
   | { v: 1; type: "snapshot"; id: string; snapshot: ServerSnapshot }

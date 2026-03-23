@@ -116,12 +116,10 @@ export interface LocalProjectsSnapshot {
   projects: LocalProjectSummary[]
 }
 
-export type FileTreeEntryKind = "file" | "directory" | "symlink"
-
 export interface FileTreeEntry {
   name: string
   relativePath: string
-  kind: FileTreeEntryKind
+  kind: "file" | "directory" | "symlink"
   extension?: string
 }
 
@@ -137,7 +135,39 @@ export interface FileTreeSnapshot {
   projectId: string
   rootPath: string
   pageSize: number
-  supportsRealtime: true
+  supportsRealtime: boolean
+}
+
+export type UpdateStatus =
+  | "idle"
+  | "checking"
+  | "available"
+  | "up_to_date"
+  | "updating"
+  | "restart_pending"
+  | "error"
+
+export interface UpdateSnapshot {
+  currentVersion: string
+  latestVersion: string | null
+  status: UpdateStatus
+  updateAvailable: boolean
+  lastCheckedAt: number | null
+  error: string | null
+  installAction: "restart" | "reload"
+}
+
+export type UpdateInstallErrorCode =
+  | "version_not_live_yet"
+  | "install_failed"
+  | "command_missing"
+
+export interface UpdateInstallResult {
+  ok: boolean
+  action: "restart" | "reload"
+  errorCode: UpdateInstallErrorCode | null
+  userTitle: string | null
+  userMessage: string | null
 }
 
 export type KeybindingAction =
@@ -158,6 +188,7 @@ export const DEFAULT_KEYBINDINGS: Record<KeybindingAction, string[]> = {
 export interface KeybindingsSnapshot {
   bindings: Record<KeybindingAction, string[]>
   warning: string | null
+  filePathDisplay: string
 }
 
 export interface McpServerInfo {

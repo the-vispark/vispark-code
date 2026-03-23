@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react"
 import { ArrowDown } from "lucide-react"
 import { useOutletContext } from "react-router-dom"
+import type { KeybindingsSnapshot } from "../../shared/types"
 import { ChatInput } from "../components/chat-ui/ChatInput"
 import { ChatNavbar } from "../components/chat-ui/ChatNavbar"
 import { RightSidebar } from "../components/chat-ui/RightSidebar"
@@ -9,6 +10,7 @@ import { ProcessingMessage } from "../components/messages/ProcessingMessage"
 import { Card, CardContent } from "../components/ui/card"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "../components/ui/resizable"
 import { ScrollArea } from "../components/ui/scroll-area"
+import { actionMatchesEvent } from "../lib/keybindings"
 import { cn } from "../lib/utils"
 import {
   DEFAULT_PROJECT_RIGHT_SIDEBAR_LAYOUT,
@@ -33,6 +35,18 @@ const EMPTY_STATE_TEXT = "What are we building ?"
 const EMPTY_STATE_TYPING_INTERVAL_MS = 19
 const CHAT_NAVBAR_OFFSET_PX = 72
 const SCROLL_BUTTON_BOTTOM_PX = 120
+
+export function resolveChatPageKeybindingAction(
+  snapshot: KeybindingsSnapshot | null,
+  event: KeyboardEvent
+) {
+  if (actionMatchesEvent(snapshot, "toggleEmbeddedTerminal", event)) return "toggleEmbeddedTerminal"
+  if (actionMatchesEvent(snapshot, "addSplitTerminal", event)) return "addSplitTerminal"
+  if (actionMatchesEvent(snapshot, "toggleRightSidebar", event)) return "toggleRightSidebar"
+  if (actionMatchesEvent(snapshot, "openInFinder", event)) return "openInFinder"
+  if (actionMatchesEvent(snapshot, "openInEditor", event)) return "openInEditor"
+  return null
+}
 
 export function ChatPage() {
   const state = useOutletContext<VisparkCodeState>()
@@ -115,22 +129,52 @@ export function ChatPage() {
   }, [state.activeChatId, state.messages.length])
 
   useEffect(() => {
-    function handleToggleKeydown(event: KeyboardEvent) {
-      if (!projectId) return
-      if (!event.metaKey || event.key.toLowerCase() !== "j") return
+    function handleGlobalKeydown(event: KeyboardEvent) {
+      if (event.repeat) return
 
-      event.preventDefault()
-      if (hasTerminals) {
-        toggleVisibility(projectId)
+      const action = resolveChatPageKeybindingAction(state.keybindings, event)
+      if (!action) return
+
+      if (action === "toggleEmbeddedTerminal") {
+        if (!projectId) return
+        event.preventDefault()
+        if (hasTerminals) {
+          toggleVisibility(projectId)
+          return
+        }
+        addTerminal(projectId)
         return
       }
 
-      addTerminal(projectId)
+      if (action === "addSplitTerminal") {
+        if (!projectId) return
+        event.preventDefault()
+        addTerminal(projectId)
+        return
+      }
+
+      if (action === "toggleRightSidebar") {
+        if (!projectId) return
+        event.preventDefault()
+        toggleRightSidebar(projectId)
+        return
+      }
+
+      if (action === "openInFinder") {
+        event.preventDefault()
+        void state.handleOpenExternal("open_finder")
+        return
+      }
+
+      if (action === "openInEditor") {
+        event.preventDefault()
+        void state.handleOpenExternal("open_editor")
+      }
     }
 
-    window.addEventListener("keydown", handleToggleKeydown)
-    return () => window.removeEventListener("keydown", handleToggleKeydown)
-  }, [addTerminal, hasTerminals, projectId, toggleVisibility])
+    window.addEventListener("keydown", handleGlobalKeydown, true)
+    return () => window.removeEventListener("keydown", handleGlobalKeydown, true)
+  }, [addTerminal, hasTerminals, projectId, state, toggleRightSidebar, toggleVisibility])
 
   useEffect(() => {
     if (state.messages.length === 0) return
@@ -463,7 +507,7 @@ export function ChatPage() {
                 projectId={projectId}
                 isVisible={showRightSidebar}
                 socket={state.socket}
-                onOpenFile={state.handleOpenLocalLink}
+                onOpenFile={(target) => state.handleOpenLocalLink(target)}
                 onOpenInFinder={(path) => state.handleOpenExternalPath("open_finder", path)}
                 onClose={() => toggleRightSidebar(projectId)}
               />

@@ -1,7 +1,7 @@
 {
   "name": "vispark-code",
   "type": "module",
-  "version": "1.0.1",
+  "version": "1.0.3",
   "description": "A local-first coding assistant powered by Vispark Vision",
   "license": "MIT",
   "keywords": [
@@ -42,6 +42,7 @@
   },
   "dependencies": {
     "@radix-ui/react-context-menu": "^2.2.16",
+    "@radix-ui/react-select": "^2.2.6",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-serialize": "^0.14.0",
     "@xterm/addon-web-links": "^0.12.0",

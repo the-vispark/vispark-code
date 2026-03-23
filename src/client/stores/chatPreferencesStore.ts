@@ -10,30 +10,38 @@ import {
 export interface ProviderPreference<TModelOptions> {
   model: string
   modelOptions: TModelOptions
+  planMode: boolean
 }
 
-type ChatPreferences = {
+export type DefaultProviderPreference = "last_used" | AgentProvider
+
+export type ChatProviderPreferences = {
   vision: ProviderPreference<VisionModelOptions>
 }
 
-type PersistedChatPreferencesState = Pick<ChatPreferencesState, "provider" | "planMode" | "preferences">
-
-interface ChatPreferencesState {
-  provider: AgentProvider
+export type ComposerState = {
+  provider: "vision"
+  model: string
+  modelOptions: VisionModelOptions
   planMode: boolean
-  preferences: ChatPreferences
-  setProvider: (provider: AgentProvider) => void
-  setModel: (provider: AgentProvider, model: string) => void
-  setModelOptions: <TProvider extends AgentProvider>(
-    provider: TProvider,
-    modelOptions: Partial<ProviderModelOptionsByProvider[TProvider]>
-  ) => void
-  setPlanMode: (planMode: boolean) => void
+}
+
+type PersistedChatPreferencesState = Pick<
+  ChatPreferencesState,
+  "defaultProvider" | "providerDefaults" | "composerState"
+> & Partial<{
+  liveProvider: AgentProvider
+  livePreferences: ChatProviderPreferences
+}>
+
+function normalizeDefaultProvider(value?: string): DefaultProviderPreference {
+  return value === "vision" ? "vision" : "last_used"
 }
 
 function normalizeVisionPreference(value?: {
   model?: string
   modelOptions?: Partial<VisionModelOptions>
+  planMode?: boolean
 }): ProviderPreference<VisionModelOptions> {
   return {
     model: value?.model ?? "vispark/vision-medium",
@@ -41,61 +49,196 @@ function normalizeVisionPreference(value?: {
       ...DEFAULT_VISION_MODEL_OPTIONS,
       ...(value?.modelOptions ?? {}),
     },
+    planMode: Boolean(value?.planMode),
+  }
+}
+
+function createDefaultProviderDefaults(): ChatProviderPreferences {
+  return {
+    vision: normalizeVisionPreference(),
+  }
+}
+
+function normalizeProviderDefaults(value?: {
+  vision?: {
+    model?: string
+    modelOptions?: Partial<VisionModelOptions>
+    planMode?: boolean
+  }
+}): ChatProviderPreferences {
+  return {
+    vision: normalizeVisionPreference(value?.vision),
+  }
+}
+
+function composerFromProviderDefaults(providerDefaults: ChatProviderPreferences): ComposerState {
+  const preference = providerDefaults.vision
+  return {
+    provider: "vision",
+    model: preference.model,
+    modelOptions: { ...preference.modelOptions },
+    planMode: preference.planMode,
+  }
+}
+
+function normalizeComposerState(
+  value: PersistedChatPreferencesState["composerState"] | undefined,
+  providerDefaults: ChatProviderPreferences,
+  legacyLiveProvider?: AgentProvider,
+  legacyLivePreferences?: ChatProviderPreferences
+): ComposerState {
+  if (value?.provider === "vision") {
+    const preference = normalizeVisionPreference(value)
+    return {
+      provider: "vision",
+      model: preference.model,
+      modelOptions: preference.modelOptions,
+      planMode: preference.planMode,
+    }
+  }
+
+  if (legacyLiveProvider === "vision") {
+    const preference = normalizeVisionPreference(legacyLivePreferences?.vision)
+    return {
+      provider: "vision",
+      model: preference.model,
+      modelOptions: preference.modelOptions,
+      planMode: preference.planMode,
+    }
+  }
+
+  return composerFromProviderDefaults(providerDefaults)
+}
+
+interface ChatPreferencesState {
+  defaultProvider: DefaultProviderPreference
+  providerDefaults: ChatProviderPreferences
+  composerState: ComposerState
+  setDefaultProvider: (provider: DefaultProviderPreference) => void
+  setProviderDefaultModel: (provider: AgentProvider, model: string) => void
+  setProviderDefaultModelOptions: <TProvider extends AgentProvider>(
+    provider: TProvider,
+    modelOptions: Partial<ProviderModelOptionsByProvider[TProvider]>
+  ) => void
+  setProviderDefaultPlanMode: (provider: AgentProvider, planMode: boolean) => void
+  setComposerProvider: (provider: AgentProvider) => void
+  setComposerModel: (model: string) => void
+  setComposerModelOptions: (modelOptions: Partial<VisionModelOptions>) => void
+  setComposerPlanMode: (planMode: boolean) => void
+  resetComposerFromProvider: (provider: AgentProvider) => void
+  initializeComposerForNewChat: () => void
+}
+
+export function migrateChatPreferencesState(
+  persistedState: Partial<PersistedChatPreferencesState> | undefined
+): Pick<ChatPreferencesState, "defaultProvider" | "providerDefaults" | "composerState"> {
+  const providerDefaults = normalizeProviderDefaults(persistedState?.providerDefaults)
+
+  return {
+    defaultProvider: normalizeDefaultProvider(persistedState?.defaultProvider),
+    providerDefaults,
+    composerState: normalizeComposerState(
+      persistedState?.composerState,
+      providerDefaults,
+      persistedState?.liveProvider,
+      persistedState?.livePreferences
+    ),
   }
 }
 
 export const useChatPreferencesStore = create<ChatPreferencesState>()(
   persist(
     (set) => ({
-      provider: "vision",
-      planMode: false,
-      preferences: {
-        vision: { model: "vispark/vision-medium", modelOptions: { ...DEFAULT_VISION_MODEL_OPTIONS } },
-      },
-      setProvider: (provider) => set({ provider }),
-      setModel: (provider, model) =>
+      defaultProvider: "last_used",
+      providerDefaults: createDefaultProviderDefaults(),
+      composerState: composerFromProviderDefaults(createDefaultProviderDefaults()),
+      setDefaultProvider: (defaultProvider) => set({ defaultProvider }),
+      setProviderDefaultModel: (_provider, model) =>
         set((state) => ({
-          preferences: {
-            ...state.preferences,
-            [provider]: {
-              ...state.preferences[provider],
+          providerDefaults: {
+            vision: normalizeVisionPreference({
+              ...state.providerDefaults.vision,
               model,
-            },
+            }),
           },
         })),
-      setModelOptions: (provider, modelOptions) =>
+      setProviderDefaultModelOptions: (_provider, modelOptions) =>
         set((state) => ({
-          preferences: {
-            ...state.preferences,
-            [provider]: {
-              ...state.preferences[provider],
+          providerDefaults: {
+            vision: normalizeVisionPreference({
+              ...state.providerDefaults.vision,
               modelOptions: {
-                ...state.preferences[provider].modelOptions,
-                ...modelOptions,
+                ...state.providerDefaults.vision.modelOptions,
+                ...(modelOptions as Partial<VisionModelOptions>),
               },
+            }),
+          },
+        })),
+      setProviderDefaultPlanMode: (_provider, planMode) =>
+        set((state) => ({
+          providerDefaults: {
+            vision: {
+              ...state.providerDefaults.vision,
+              planMode,
             },
           },
         })),
-      setPlanMode: (planMode) => set({ planMode }),
+      setComposerProvider: () =>
+        set((state) => ({
+          composerState: {
+            ...state.composerState,
+            provider: "vision",
+          },
+        })),
+      setComposerModel: (model) =>
+        set((state) => ({
+          composerState: {
+            ...state.composerState,
+            model,
+          },
+        })),
+      setComposerModelOptions: (modelOptions) =>
+        set((state) => ({
+          composerState: {
+            ...state.composerState,
+            modelOptions: {
+              ...state.composerState.modelOptions,
+              ...modelOptions,
+            },
+          },
+        })),
+      setComposerPlanMode: (planMode) =>
+        set((state) => ({
+          composerState: {
+            ...state.composerState,
+            planMode,
+          },
+        })),
+      resetComposerFromProvider: () =>
+        set((state) => ({
+          composerState: composerFromProviderDefaults(state.providerDefaults),
+        })),
+      initializeComposerForNewChat: () =>
+        set((state) => {
+          if (state.defaultProvider === "last_used") {
+            return {
+              composerState: {
+                ...state.composerState,
+                modelOptions: { ...state.composerState.modelOptions },
+              },
+            }
+          }
+
+          return {
+            composerState: composerFromProviderDefaults(state.providerDefaults),
+          }
+        }),
     }),
     {
-      name: "chat-preferences",
-      version: 4,
-      migrate: (persistedState) => {
-        const state = persistedState as Partial<PersistedChatPreferencesState> | undefined
-
-        return {
-          provider: "vision" as const,
-          planMode: state?.planMode ?? false,
-          preferences: {
-            vision: normalizeVisionPreference(
-              state?.preferences && "vision" in state.preferences
-                ? state.preferences.vision
-                : undefined
-            ),
-          },
-        }
-      },
+      name: "vispark-chat-preferences",
+      version: 1,
+      migrate: (persistedState) =>
+        migrateChatPreferencesState(persistedState as Partial<PersistedChatPreferencesState> | undefined),
     }
   )
 )

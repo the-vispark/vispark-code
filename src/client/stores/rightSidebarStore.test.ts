@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test"
-import { getDefaultProjectRightSidebarLayout, useRightSidebarStore } from "./rightSidebarStore"
+import { getDefaultProjectRightSidebarLayout, migrateRightSidebarStore, useRightSidebarStore } from "./rightSidebarStore"
 
 const PROJECT_ID = "project-1"
 
@@ -8,9 +8,9 @@ describe("rightSidebarStore", () => {
     useRightSidebarStore.setState({ projects: {} })
   })
 
-  test("defaults to an open drawer", () => {
+  test("defaults to a closed drawer", () => {
     const layout = useRightSidebarStore.getState().projects[PROJECT_ID] ?? getDefaultProjectRightSidebarLayout()
-    expect(layout.isVisible).toBe(true)
+    expect(layout.isVisible).toBe(false)
     expect(layout.size).toBe(20)
   })
 
@@ -21,11 +21,11 @@ describe("rightSidebarStore", () => {
     useRightSidebarStore.getState().setSize("project-2", 26)
 
     expect(useRightSidebarStore.getState().projects[PROJECT_ID]).toEqual({
-      isVisible: false,
+      isVisible: true,
       size: 34,
     })
     expect(useRightSidebarStore.getState().projects["project-2"]).toEqual({
-      isVisible: false,
+      isVisible: true,
       size: 26,
     })
   })
@@ -43,7 +43,27 @@ describe("rightSidebarStore", () => {
     useRightSidebarStore.getState().clearProject(PROJECT_ID)
 
     const layout = useRightSidebarStore.getState().projects[PROJECT_ID] ?? getDefaultProjectRightSidebarLayout()
-    expect(layout.isVisible).toBe(true)
+    expect(layout.isVisible).toBe(false)
     expect(layout.size).toBe(20)
+  })
+
+  test("migration closes persisted sidebars while preserving valid sizes", async () => {
+    const migrated = await migrateRightSidebarStore({
+        projects: {
+          [PROJECT_ID]: {
+            isVisible: true,
+            size: 34,
+          },
+        },
+      })
+
+    expect(migrated).toEqual({
+      projects: {
+        [PROJECT_ID]: {
+          isVisible: false,
+          size: 34,
+        },
+      },
+    })
   })
 })

@@ -1,28 +1,45 @@
-import { describe, expect, test } from "bun:test"
-import { getRightSidebarContentMode } from "./RightSidebar"
+import { describe, expect, mock, test } from "bun:test"
+import { createElement } from "react"
+import { renderToStaticMarkup } from "react-dom/server"
+import { RightSidebar } from "./RightSidebar"
+import type { VisparkCodeSocket } from "../../app/socket"
 
-describe("getRightSidebarContentMode", () => {
-  test("shows the project empty state when no project is selected", () => {
-    expect(getRightSidebarContentMode({
-      projectId: null,
-      rootError: null,
-      rootEntryCount: 0,
-    })).toBe("empty-project")
+const socketStub = {
+  subscribeFileTree: () => () => {},
+  command: async () => {
+    throw new Error("Not implemented in SSR test")
+  },
+} as unknown as VisparkCodeSocket
+
+describe("RightSidebar", () => {
+  test("renders the placeholder copy", () => {
+    const markup = renderToStaticMarkup(
+      createElement(RightSidebar, {
+        projectId: null,
+        isVisible: true,
+        socket: socketStub,
+        onOpenFile: async () => {},
+        onOpenInFinder: async () => {},
+        onClose: () => {},
+      })
+    )
+
+    expect(markup).toContain("Open a project to browse files.")
   })
 
-  test("keeps the tree content mode while hidden so close animations retain content", () => {
-    expect(getRightSidebarContentMode({
-      projectId: "project-1",
-      rootError: null,
-      rootEntryCount: 12,
-    })).toBe("tree")
-  })
+  test("renders the close affordance", () => {
+    const onClose = mock(() => {})
+    const markup = renderToStaticMarkup(
+      createElement(RightSidebar, {
+        projectId: null,
+        isVisible: true,
+        socket: socketStub,
+        onOpenFile: async () => {},
+        onOpenInFinder: async () => {},
+        onClose,
+      })
+    )
 
-  test("shows the error state when the root directory load fails with no entries", () => {
-    expect(getRightSidebarContentMode({
-      projectId: "project-1",
-      rootError: "Permission denied",
-      rootEntryCount: 0,
-    })).toBe("empty-error")
+    expect(markup).toContain("Close file browser")
   })
 })

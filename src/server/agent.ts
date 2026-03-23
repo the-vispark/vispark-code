@@ -311,7 +311,7 @@ async function startVisionTurn(args: {
       stderr: (data: string) => {
         // Log stderr to console for debugging, but we rely on the structured result error
         // for the UI message.
-        console.error(`[Harness Stderr] ${data}`);
+        console.error(`[Harness Stderr] ${data}`)
       },
     },
   })

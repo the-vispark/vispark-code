@@ -51,8 +51,8 @@ async function createSession(terminalId: string) {
     scrollback: 1_000,
   })
 
-  manager.write(terminalId, "printf '__KANNA_READY__\\n'\r")
-  await waitFor(() => output.includes("__KANNA_READY__"), SHELL_START_TIMEOUT_MS)
+  manager.write(terminalId, "printf '__VISPARK-CODE_READY__\\n'\r")
+  await waitFor(() => output.includes("__VISPARK-CODE_READY__"), SHELL_START_TIMEOUT_MS)
 
   return {
     manager,
@@ -74,13 +74,13 @@ describeIfSupported("TerminalManager", () => {
       await waitFor(() => getOutput().includes("time.sleep(30)"), COMMAND_TIMEOUT_MS)
 
       manager.write(terminalId, "\x03")
-      manager.write(terminalId, "printf '__KANNA_AFTER_INT__\\n'\r")
+      manager.write(terminalId, "printf '__VISPARK-CODE_AFTER_INT__\\n'\r")
 
-      await waitFor(() => getOutput().includes("__KANNA_AFTER_INT__"), COMMAND_TIMEOUT_MS)
+      await waitFor(() => getOutput().includes("__VISPARK-CODE_AFTER_INT__"), COMMAND_TIMEOUT_MS)
 
       const snapshot = manager.getSnapshot(terminalId)
       expect(snapshot?.status).toBe("running")
-      expect(getOutput()).toContain("__KANNA_AFTER_INT__")
+      expect(getOutput()).toContain("__VISPARK-CODE_AFTER_INT__")
     } finally {
       manager.close(terminalId)
     }
@@ -247,8 +247,8 @@ describeIfSupported("TerminalManager", () => {
         rows: 24,
         scrollback: 1_000,
       })
-      manager.write(terminalId, "printf '__KANNA_READY__\\n'\r")
-      await waitForOutputToContain(() => getOutput(terminalId), "__KANNA_READY__", SHELL_START_TIMEOUT_MS)
+      manager.write(terminalId, "printf '__VISPARK-CODE_READY__\\n'\r")
+      await waitForOutputToContain(() => getOutput(terminalId), "__VISPARK-CODE_READY__", SHELL_START_TIMEOUT_MS)
     }
 
     try {
@@ -264,8 +264,8 @@ describeIfSupported("TerminalManager", () => {
       await waitFor(() => getOutput(secondTerminalId).length > before, COMMAND_TIMEOUT_MS)
       manager.write(secondTerminalId, FOCUS_IN_SEQUENCE)
       manager.write(secondTerminalId, "\x03")
-      manager.write(secondTerminalId, "printf '__KANNA_FRESH_SESSION__\\n'\r")
-      await waitForOutputToContain(() => getOutput(secondTerminalId), "__KANNA_FRESH_SESSION__")
+      manager.write(secondTerminalId, "printf '__VISPARK-CODE_FRESH_SESSION__\\n'\r")
+      await waitForOutputToContain(() => getOutput(secondTerminalId), "__VISPARK-CODE_FRESH_SESSION__")
 
       const interactionOutput = getOutput(secondTerminalId).slice(before)
       expect(interactionOutput).not.toContain("^[[I")

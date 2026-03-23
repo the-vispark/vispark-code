@@ -1,101 +1,19 @@
 import { forwardRef, memo, useCallback, useEffect, useRef, useState } from "react"
-import { ArrowUp, Brain, BrainCircuit, ListTodo, LockOpen, Sparkles, Zap } from "lucide-react"
+import { ArrowUp } from "lucide-react"
 import {
   type AgentProvider,
   type ModelOptions,
   type ProviderCatalogEntry,
+  type VisionModelOptions,
 } from "../../../shared/types"
-import { Button } from "../ui/button"
-import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover"
-import { Textarea } from "../ui/textarea"
-import { cn } from "../../lib/utils"
+import { CHAT_INPUT_ATTRIBUTE, focusNextChatInput } from "../../app/chatFocusPolicy"
 import { useIsStandalone } from "../../hooks/useIsStandalone"
 import { useChatInputStore } from "../../stores/chatInputStore"
-import { useChatPreferencesStore } from "../../stores/chatPreferencesStore"
-import { CHAT_INPUT_ATTRIBUTE, focusNextChatInput } from "../../app/chatFocusPolicy"
-
-function PopoverMenuItem({
-  onClick,
-  selected,
-  icon,
-  label,
-  description,
-}: {
-  onClick: () => void
-  selected: boolean
-  icon: React.ReactNode
-  label: string
-  description?: string
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={cn(
-        "w-full flex items-center gap-2 p-2 border border-border/0 rounded-lg text-left transition-opacity",
-        selected ? "bg-muted border-border" : "hover:opacity-60"
-      )}
-    >
-      {icon}
-      <div>
-        <div className="text-sm font-medium">{label}</div>
-        {description ? <div className="text-xs text-muted-foreground">{description}</div> : null}
-      </div>
-    </button>
-  )
-}
-
-function InputPopover({
-  trigger,
-  triggerClassName,
-  disabled = false,
-  children,
-}: {
-  trigger: React.ReactNode
-  triggerClassName?: string
-  disabled?: boolean
-  children: React.ReactNode | ((close: () => void) => React.ReactNode)
-}) {
-  const [open, setOpen] = useState(false)
-
-  if (disabled) {
-    return (
-      <button
-        disabled
-        className={cn(
-          "flex items-center gap-1.5 px-2 py-1 text-sm rounded-md text-muted-foreground [&>svg]:shrink-0 opacity-70 cursor-default",
-          triggerClassName
-        )}
-      >
-        {trigger}
-      </button>
-    )
-  }
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          className={cn(
-            "flex items-center gap-1.5 px-2 py-1 text-sm rounded-md transition-colors text-muted-foreground [&>svg]:shrink-0",
-            "hover:bg-muted/50",
-            triggerClassName
-          )}
-        >
-          {trigger}
-        </button>
-      </PopoverTrigger>
-      <PopoverContent align="center" className="w-64 p-1">
-        <div className="space-y-1">{typeof children === "function" ? children(() => setOpen(false)) : children}</div>
-      </PopoverContent>
-    </Popover>
-  )
-}
-
-const MODEL_ICON_BY_ID = {
-  "vispark/vision-small": Zap,
-  "vispark/vision-medium": Sparkles,
-  "vispark/vision-large": Brain,
-} as const
+import { type ComposerState, useChatPreferencesStore } from "../../stores/chatPreferencesStore"
+import { cn } from "../../lib/utils"
+import { Button } from "../ui/button"
+import { Textarea } from "../ui/textarea"
+import { ChatPreferenceControls } from "./ChatPreferenceControls"
 
 interface Props {
   onSubmit: (
@@ -111,6 +29,55 @@ interface Props {
   missingVisionApiKey?: boolean
 }
 
+function createLockedComposerState(
+  _provider: AgentProvider,
+  composerState: ComposerState,
+  providerDefaults: ReturnType<typeof useChatPreferencesStore.getState>["providerDefaults"]
+): ComposerState {
+  if (composerState.provider === "vision") {
+    return {
+      provider: "vision",
+      model: composerState.model,
+      modelOptions: { ...composerState.modelOptions },
+      planMode: composerState.planMode,
+    }
+  }
+
+  return {
+    provider: "vision",
+    model: providerDefaults.vision.model,
+    modelOptions: { ...providerDefaults.vision.modelOptions },
+    planMode: providerDefaults.vision.planMode,
+  }
+}
+
+export function resolvePlanModeState(args: {
+  providerLocked: boolean
+  planMode: boolean
+  selectedProvider: AgentProvider
+  composerState: ComposerState
+  providerDefaults: ReturnType<typeof useChatPreferencesStore.getState>["providerDefaults"]
+  lockedComposerState: ComposerState | null
+}) {
+  if (!args.providerLocked) {
+    return {
+      composerPlanMode: args.planMode,
+      lockedComposerState: args.lockedComposerState,
+    }
+  }
+
+  const nextLockedState = args.lockedComposerState
+    ?? createLockedComposerState(args.selectedProvider, args.composerState, args.providerDefaults)
+
+  return {
+    composerPlanMode: args.composerState.planMode,
+    lockedComposerState: {
+      ...nextLockedState,
+      planMode: args.planMode,
+    } satisfies ComposerState,
+  }
+}
+
 const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput({
   onSubmit,
   onCancel,
@@ -123,22 +90,27 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
 }, forwardedRef) {
   const { getDraft, setDraft, clearDraft } = useChatInputStore()
   const {
-    provider: preferredProvider,
-    preferences,
-    planMode,
-    setModel,
-    setModelOptions,
-    setPlanMode,
+    composerState,
+    providerDefaults,
+    setComposerModel,
+    setComposerModelOptions,
+    setComposerPlanMode,
+    resetComposerFromProvider,
   } = useChatPreferencesStore()
   const [value, setValue] = useState(() => (chatId ? getDraft(chatId) : ""))
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const isStandalone = useIsStandalone()
+  const [lockedComposerState, setLockedComposerState] = useState<ComposerState | null>(() => (
+    activeProvider ? createLockedComposerState(activeProvider, composerState, providerDefaults) : null
+  ))
 
-  const selectedProvider = activeProvider ?? preferredProvider
+  const providerLocked = activeProvider !== null
+  const providerPrefs = providerLocked
+    ? lockedComposerState ?? createLockedComposerState(activeProvider, composerState, providerDefaults)
+    : composerState
+  const selectedProvider = providerLocked ? activeProvider : composerState.provider
   const providerConfig = availableProviders.find((provider) => provider.id === selectedProvider) ?? availableProviders[0]
-  const providerPrefs = preferences[selectedProvider]
   const showPlanMode = providerConfig?.supportsPlanMode ?? false
-  const continualLearning = preferences.vision.modelOptions.continualLearning
 
   const autoResize = useCallback(() => {
     const element = textareaRef.current
@@ -172,21 +144,68 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
     textareaRef.current?.focus()
   }, [chatId])
 
+  useEffect(() => {
+    if (activeProvider === null) {
+      setLockedComposerState(null)
+      return
+    }
+
+    setLockedComposerState(createLockedComposerState(activeProvider, composerState, providerDefaults))
+  }, [activeProvider, chatId, composerState, providerDefaults])
+
+  function setVisionModelOptions(modelOptions: Partial<VisionModelOptions>) {
+    if (providerLocked) {
+      setLockedComposerState((current) => {
+        const next = current ?? createLockedComposerState(selectedProvider, composerState, providerDefaults)
+        return {
+          ...next,
+          modelOptions: { ...next.modelOptions, ...modelOptions },
+        }
+      })
+      return
+    }
+
+    setComposerModelOptions(modelOptions)
+  }
+
+  function setEffectivePlanMode(planMode: boolean) {
+    const nextState = resolvePlanModeState({
+      providerLocked,
+      planMode,
+      selectedProvider,
+      composerState,
+      providerDefaults,
+      lockedComposerState,
+    })
+
+    if (nextState.lockedComposerState !== lockedComposerState) {
+      setLockedComposerState(nextState.lockedComposerState)
+    }
+    if (nextState.composerPlanMode !== composerState.planMode) {
+      setComposerPlanMode(nextState.composerPlanMode)
+    }
+  }
+
+  function toggleEffectivePlanMode() {
+    setEffectivePlanMode(!providerPrefs.planMode)
+  }
+
   async function handleSubmit() {
     if (!value.trim()) return
     const nextValue = value
+    const submitOptions = {
+      provider: selectedProvider,
+      model: providerPrefs.model,
+      modelOptions: { vision: { ...providerPrefs.modelOptions } },
+      planMode: showPlanMode ? providerPrefs.planMode : false,
+    }
 
     setValue("")
     if (chatId) clearDraft(chatId)
     if (textareaRef.current) textareaRef.current.style.height = "auto"
 
     try {
-      await onSubmit(nextValue, {
-        provider: selectedProvider,
-        model: providerPrefs.model,
-        modelOptions: { vision: { ...preferences.vision.modelOptions } },
-        planMode: showPlanMode ? planMode : false,
-      })
+      await onSubmit(nextValue, submitOptions)
     } catch (error) {
       console.error("[ChatInput] Submit failed:", error)
       setValue(nextValue)
@@ -203,7 +222,7 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
 
     if (event.key === "Tab" && event.shiftKey && showPlanMode) {
       event.preventDefault()
-      setPlanMode(!planMode)
+      toggleEffectivePlanMode()
       return
     }
 
@@ -219,8 +238,6 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
       void handleSubmit()
     }
   }
-
-  const ModelIcon = MODEL_ICON_BY_ID[providerPrefs.model as keyof typeof MODEL_ICON_BY_ID] ?? Sparkles
 
   return (
     <div className={cn("p-3 pt-0 md:pb-2", isStandalone && "px-5 pb-5")}>
@@ -274,112 +291,35 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
         </Button>
       </div>
 
-      <div className="flex justify-center items-center gap-0.5 max-w-[840px] mx-auto mt-2 animate-fade-in">
-        <button
-          type="button"
-          className="flex items-center gap-1.5 px-2 py-1 text-sm rounded-md text-muted-foreground"
-        >
-          <Sparkles className="h-3.5 w-3.5" />
-          <span>{providerConfig?.label ?? "Vision"}</span>
-        </button>
-
-        <InputPopover
-          trigger={
-            <>
-              <ModelIcon className="h-3.5 w-3.5" />
-              <span>{providerConfig.models.find((model) => model.id === providerPrefs.model)?.label ?? providerPrefs.model}</span>
-            </>
+      <ChatPreferenceControls
+        availableProviders={availableProviders}
+        selectedProvider={selectedProvider}
+        providerLocked={providerLocked}
+        model={providerPrefs.model}
+        modelOptions={providerPrefs.modelOptions}
+        onProviderChange={(provider) => {
+          if (providerLocked) return
+          resetComposerFromProvider(provider)
+        }}
+        onModelChange={(_, model) => {
+          if (providerLocked) {
+            setLockedComposerState((current) => {
+              const next = current ?? createLockedComposerState(selectedProvider, composerState, providerDefaults)
+              return { ...next, model }
+            })
+            return
           }
-        >
-          {(close) => providerConfig.models.map((model) => {
-            const Icon = MODEL_ICON_BY_ID[model.id as keyof typeof MODEL_ICON_BY_ID] ?? Sparkles
-            return (
-              <PopoverMenuItem
-                key={model.id}
-                onClick={() => {
-                  setModel(selectedProvider, model.id)
-                  close()
-                }}
-                selected={providerPrefs.model === model.id}
-                icon={<Icon className="h-4 w-4 text-muted-foreground" />}
-                label={model.label}
-              />
-            )
-          })}
-        </InputPopover>
 
-        <InputPopover
-          trigger={
-            <>
-              <BrainCircuit className="h-3.5 w-3.5" />
-              <span>{continualLearning ? "Learning On" : "Learning Off"}</span>
-            </>
-          }
-          triggerClassName={continualLearning ? "text-emerald-700 dark:text-emerald-300" : undefined}
-        >
-          {(close) => (
-            <>
-              <PopoverMenuItem
-                onClick={() => {
-                  setModelOptions("vision", { continualLearning: true })
-                  close()
-                }}
-                selected={continualLearning}
-                icon={<BrainCircuit className="h-4 w-4 text-muted-foreground" />}
-                label="Continual Learning"
-                description="Learn your coding style and reuse it in future chats"
-              />
-              <PopoverMenuItem
-                onClick={() => {
-                  setModelOptions("vision", { continualLearning: false })
-                  close()
-                }}
-                selected={!continualLearning}
-                icon={<LockOpen className="h-4 w-4 text-muted-foreground" />}
-                label="Learning Off"
-                description="Respond normally without updating or using saved learning weights"
-              />
-            </>
-          )}
-        </InputPopover>
-
-        {showPlanMode ? (
-          <InputPopover
-            trigger={
-              <>
-                {planMode ? <ListTodo className="h-3.5 w-3.5" /> : <LockOpen className="h-3.5 w-3.5" />}
-                <span>{planMode ? "Plan Mode" : "Full Access"}</span>
-              </>
-            }
-            triggerClassName={planMode ? "text-blue-400 dark:text-blue-300" : undefined}
-          >
-            {(close) => (
-              <>
-                <PopoverMenuItem
-                  onClick={() => {
-                    setPlanMode(false)
-                    close()
-                  }}
-                  selected={!planMode}
-                  icon={<LockOpen className="h-4 w-4 text-muted-foreground" />}
-                  label="Full Access"
-                  description="Execution without approval"
-                />
-                <PopoverMenuItem
-                  onClick={() => {
-                    setPlanMode(true)
-                    close()
-                  }}
-                  selected={planMode}
-                  icon={<ListTodo className="h-4 w-4 text-muted-foreground" />}
-                  label="Plan Mode"
-                  description="Review a plan before execution"
-                />
-              </>
-            )}
-          </InputPopover>
-        ) : null}
-      </div>
+          setComposerModel(model)
+        }}
+        onVisionContinualLearningChange={(continualLearning) => {
+          setVisionModelOptions({ continualLearning })
+        }}
+        planMode={providerPrefs.planMode}
+        onPlanModeChange={setEffectivePlanMode}
+        includePlanMode={showPlanMode}
+        className="flex justify-center items-center gap-0.5 max-w-[840px] mx-auto mt-2 animate-fade-in"
+      />
     </div>
   )
 })
