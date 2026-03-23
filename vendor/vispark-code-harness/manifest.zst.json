@@ -1,0 +1,46 @@
+{
+  "version": "2.1.72",
+  "buildDate": "2026-03-09T23:33:13Z",
+  "platforms": {
+    "darwin-arm64": {
+      "binary": "Vision.zst",
+      "checksum": "ee60e1445422e58266b1b1f25921928bd3152e21b07b0855df1e7ef451dac7ae",
+      "size": 40284014
+    },
+    "darwin-x64": {
+      "binary": "Vision.zst",
+      "checksum": "5c7525e381519c65f03beb13cf80c4b2b7781a913fd9e198ae8a5173b5ba5030",
+      "size": 42746087
+    },
+    "linux-arm64": {
+      "binary": "Vision.zst",
+      "checksum": "45a309ba776cedca143b7046a393633577f322d74d2c072bcd1b855ec82c3033",
+      "size": 52164854
+    },
+    "linux-x64": {
+      "binary": "Vision.zst",
+      "checksum": "95fb008a2e90c8bb838e0d64b71378e113a65117df65dafac475d11fc50988ce",
+      "size": 52921204
+    },
+    "linux-arm64-musl": {
+      "binary": "Vision.zst",
+      "checksum": "b97770c61af690b7bac9b7a7a532c43171e7c6ad26bee1ec7decce3c0058c8a1",
+      "size": 50096193
+    },
+    "linux-x64-musl": {
+      "binary": "Vision.zst",
+      "checksum": "46f96d49083bf99bd94d840fbff317d29e6ebd8f02ee5c421e286e8991ee3d22",
+      "size": 50875190
+    },
+    "win32-x64": {
+      "binary": "Vision.exe.zst",
+      "checksum": "0a82c18322dd38cda8d73a55ef499e2693080972a8c9541cb83c381b4a11d08a",
+      "size": 53416442
+    },
+    "win32-arm64": {
+      "binary": "Vision.exe.zst",
+      "checksum": "e0c9346280c833107244fae2d35a49a07d42d5ea862fb9792c313edcf6a5524d",
+      "size": 51510960
+    }
+  }
+}

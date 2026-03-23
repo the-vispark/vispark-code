@@ -1,0 +1,81 @@
+<p align="center">
+  <img src="assets/icon.png" alt="Vispark Code" width="80" />
+</p>
+
+<h1 align="center">Vispark Code</h1>
+
+<p align="center">
+  <strong>A local-first coding assistant powered by Vision AI</strong>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/screenshot.png" />
+    <source media="(prefers-color-scheme: light)" srcset="assets/screenshot-light.png" />
+    <img src="assets/screenshot.png" alt="Vispark Code screenshot" width="800" />
+  </picture>
+</p>
+
+## Quickstart
+
+```bash
+bun install
+bun run build
+bun run start
+```
+
+Or install the CLI globally:
+
+```bash
+bun install -g vispark-code
+vispark-code
+```
+
+Vispark Code opens at `http://localhost:3210`.
+
+## What It Is
+
+- A polished local coding assistant
+- Vision AI as the model backend
+- Continual Learning Available
+- An optamised harness
+- Built-in Vispark Lab API key settings
+- Project-first chats, tool flows, plan mode, and embedded terminal support
+
+## Local Data
+
+Vispark Code stores state in `~/.vispark-code/data/`.
+
+
+## Development
+
+```bash
+bun run dev
+```
+
+Useful commands:
+
+```bash
+bun run check
+bun test
+bun run dev:client
+bun run dev:server
+bun run sync:sources
+```
+
+## Project Structure
+
+```text
+src/
+  client/   React UI
+  server/   Bun server, runtime bridge, Vision proxy
+  shared/   Shared types and branding
+```
+
+## Safe Source Sync
+
+Vispark Code keeps package self-updates for installed users.
+
+- Your custom project files are not auto-overwritten.
+- Sync state is stored in `~/.vispark-code/data/source-sync.json`.
+- Set `VISPARK_CODE_DISABLE_SOURCE_SYNC=1` if you want to turn that off.

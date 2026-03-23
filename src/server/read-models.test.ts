@@ -1,0 +1,109 @@
+import { describe, expect, test } from "bun:test"
+import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveSidebarData } from "./read-models"
+import { createEmptyState } from "./events"
+
+describe("read models", () => {
+  test("include provider data in sidebar rows", () => {
+    const state = createEmptyState()
+    state.projectsById.set("project-1", {
+      id: "project-1",
+      localPath: "/tmp/project",
+      title: "Project",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    state.projectIdsByPath.set("/tmp/project", "project-1")
+    state.chatsById.set("chat-1", {
+      id: "chat-1",
+      projectId: "project-1",
+      title: "Chat",
+      createdAt: 1,
+      updatedAt: 1,
+      provider: "vision",
+      planMode: false,
+      sessionToken: "thread-1",
+      lastError: null,
+      lastTurnOutcome: null,
+    })
+
+    const sidebar = deriveSidebarData(state, new Map())
+    expect(sidebar.projectGroups[0]?.chats[0]?.provider).toBe("vision")
+  })
+
+  test("includes the Vision provider in chat snapshots", () => {
+    const state = createEmptyState()
+    state.projectsById.set("project-1", {
+      id: "project-1",
+      localPath: "/tmp/project",
+      title: "Project",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    state.projectIdsByPath.set("/tmp/project", "project-1")
+    state.chatsById.set("chat-1", {
+      id: "chat-1",
+      projectId: "project-1",
+      title: "Chat",
+      createdAt: 1,
+      updatedAt: 1,
+      provider: "vision",
+      planMode: true,
+      sessionToken: "session-1",
+      lastError: "Invalid API key",
+      lastTurnOutcome: null,
+    })
+
+    const chat = deriveChatSnapshot(state, new Map(), "chat-1")
+    expect(chat?.runtime.provider).toBe("vision")
+    expect(chat?.runtime.lastError).toBe("Invalid API key")
+    expect(chat?.availableProviders).toEqual([
+      expect.objectContaining({
+        id: "vision",
+        defaultModel: "vispark/vision-medium",
+      }),
+    ])
+  })
+
+  test("prefers saved project metadata over discovered entries for the same path", () => {
+    const state = createEmptyState()
+    state.projectsById.set("project-1", {
+      id: "project-1",
+      localPath: "/tmp/project",
+      title: "Saved Project",
+      createdAt: 1,
+      updatedAt: 50,
+    })
+    state.projectIdsByPath.set("/tmp/project", "project-1")
+    state.chatsById.set("chat-1", {
+      id: "chat-1",
+      projectId: "project-1",
+      title: "Chat",
+      createdAt: 1,
+      updatedAt: 75,
+      provider: "vision",
+      planMode: false,
+      sessionToken: null,
+      lastError: null,
+      lastMessageAt: 100,
+      lastTurnOutcome: null,
+    })
+
+    const snapshot = deriveLocalProjectsSnapshot(state, [
+      {
+        localPath: "/tmp/project",
+        title: "Discovered Project",
+        modifiedAt: 10,
+      },
+    ], "Local Machine")
+
+    expect(snapshot.projects).toEqual([
+      {
+        localPath: "/tmp/project",
+        title: "Saved Project",
+        source: "saved",
+        lastOpenedAt: 100,
+        chatCount: 1,
+      },
+    ])
+  })
+})
