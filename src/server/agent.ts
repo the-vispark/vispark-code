@@ -481,6 +481,7 @@ export class AgentCoordinator {
       void turn.getAccountInfo()
         .then(async (accountInfo) => {
           if (!accountInfo) return
+          if (!this.store.getChat(args.chatId)) return
           await this.store.appendMessage(args.chatId, timestamped({ kind: "account_info", accountInfo }))
           this.onStateChange()
         })
@@ -533,6 +534,10 @@ export class AgentCoordinator {
   private async runTurn(active: ActiveTurn) {
     try {
       for await (const event of active.turn.stream) {
+        if (!this.store.getChat(active.chatId)) {
+          break
+        }
+
         if (event.type === "session_token" && event.sessionToken) {
           await this.store.setSessionToken(active.chatId, event.sessionToken)
           this.onStateChange()
@@ -558,23 +563,31 @@ export class AgentCoordinator {
         this.onStateChange()
       }
     } catch (error) {
-      if (!active.cancelRequested) {
+      if (!active.cancelRequested && this.store.getChat(active.chatId)) {
         const message = formatErrorMessage(error)
-        await this.store.appendMessage(
-          active.chatId,
-          timestamped({
-            kind: "result",
-            subtype: "error",
-            isError: true,
-            durationMs: 0,
-            result: message,
-          })
-        )
-        await this.store.recordTurnFailed(active.chatId, message)
+        try {
+          await this.store.appendMessage(
+            active.chatId,
+            timestamped({
+              kind: "result",
+              subtype: "error",
+              isError: true,
+              durationMs: 0,
+              result: message,
+            })
+          )
+          await this.store.recordTurnFailed(active.chatId, message)
+        } catch (e) {
+          // Ignore failures while saving the error
+        }
       }
     } finally {
-      if (active.cancelRequested && !active.cancelRecorded) {
-        await this.store.recordTurnCancelled(active.chatId)
+      if (active.cancelRequested && !active.cancelRecorded && this.store.getChat(active.chatId)) {
+        try {
+          await this.store.recordTurnCancelled(active.chatId)
+        } catch (e) {
+          // Ignore if chat is concurrently deleted
+        }
       }
       active.turn.close()
       this.activeTurns.delete(active.chatId)
@@ -593,18 +606,26 @@ export class AgentCoordinator {
 
     if (pendingTool) {
       const result = discardedToolResult(pendingTool.tool)
-      await this.store.appendMessage(
-        chatId,
-        timestamped({
-          kind: "tool_result",
-          toolId: pendingTool.toolUseId,
-          content: result,
-        })
-      )
+      if (this.store.getChat(chatId)) {
+        try {
+          await this.store.appendMessage(
+            chatId,
+            timestamped({
+              kind: "tool_result",
+              toolId: pendingTool.toolUseId,
+              content: result,
+            })
+          )
+        } catch (e) {}
+      }
     }
 
-    await this.store.appendMessage(chatId, timestamped({ kind: "interrupted" }))
-    await this.store.recordTurnCancelled(chatId)
+    if (this.store.getChat(chatId)) {
+      try {
+        await this.store.appendMessage(chatId, timestamped({ kind: "interrupted" }))
+        await this.store.recordTurnCancelled(chatId)
+      } catch (e) {}
+    }
     active.cancelRecorded = true
     active.hasFinalResult = true
 

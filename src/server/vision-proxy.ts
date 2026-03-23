@@ -9,6 +9,7 @@ const CONTINUAL_LEARNING_SYSTEM_GUIDANCE = [
   "Continual learning is enabled for this user.",
   "Learn only the user's code-relevant preferences and habits that can be useful in future coding work, such as coding style, code preferences, naming patterns, architecture habits, and technical communication preferences.",
   "Do not learn or retain anything unrelated to coding or future development usefulness.",
+  "Do not learn if the topic is only current project related, you have to learn general preferences and habits about the user.",
   "Apply what you learn quietly and consistently unless the user explicitly asks about the learning behavior.",
 ].join("\n\n")
 
@@ -64,25 +65,25 @@ type VisionResponse = {
   error?: string
   weights?: string
   data?:
-    | {
-        type: "text"
-        content: string
-        input_tokens?: number
-        output_tokens?: number
-        status?: boolean
-        weights?: string
-      }
-    | {
-        type: "tool_calls"
-        tool_calls: Array<{
-          name: string
-          arguments: Record<string, unknown>
-        }>
-        input_tokens?: number
-        output_tokens?: number
-        status?: boolean
-        weights?: string
-      }
+  | {
+    type: "text"
+    content: string
+    input_tokens?: number
+    output_tokens?: number
+    status?: boolean
+    weights?: string
+  }
+  | {
+    type: "tool_calls"
+    tool_calls: Array<{
+      name: string
+      arguments: Record<string, unknown>
+    }>
+    input_tokens?: number
+    output_tokens?: number
+    status?: boolean
+    weights?: string
+  }
 }
 
 type FlattenedVisionPrompt = {
@@ -663,7 +664,7 @@ async function callVision(
         // Not JSON
       }
       const error = new Error(cleanErrorMessage(errorMessage))
-      ;(error as any).status = visionResponse.status
+        ; (error as any).status = visionResponse.status
       throw error
     }
 
@@ -689,7 +690,7 @@ async function callVision(
         status = 429
       }
 
-      ;(error as any).status = status
+      ; (error as any).status = status
       throw error
     }
 
