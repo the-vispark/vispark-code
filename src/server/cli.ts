@@ -1,7 +1,7 @@
 import process from "node:process"
 import {
   fetchLatestPackageVersion,
-  installLatestPackage,
+  installPackageVersion,
   openUrl,
   relaunchCli,
   runCli,
@@ -18,7 +18,7 @@ const result = await runCli(process.argv.slice(2), {
   bunVersion: Bun.version,
   startServer: startVisparkCodeServer,
   fetchLatestVersion: fetchLatestPackageVersion,
-  installLatest: installLatestPackage,
+  installVersion: installPackageVersion,
   relaunch: relaunchCli,
   openUrl,
   log: console.log,

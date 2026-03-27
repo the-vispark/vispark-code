@@ -10,7 +10,7 @@ function createDeps(overrides: Partial<Parameters<typeof runCli>[1]> = {}) {
   const calls = {
     startServer: [] as Array<{ port: number; host: string; openBrowser: boolean; strictPort: boolean }>,
     fetchLatestVersion: [] as string[],
-    installLatest: [] as string[],
+    installVersion: [] as Array<{ packageName: string; version: string }>,
     relaunch: [] as Array<{ command: string; args: string[] }>,
     openUrl: [] as string[],
     log: [] as string[],
@@ -31,8 +31,8 @@ function createDeps(overrides: Partial<Parameters<typeof runCli>[1]> = {}) {
       calls.fetchLatestVersion.push(packageName)
       return "0.3.0"
     },
-    installLatest: (packageName) => {
-      calls.installLatest.push(packageName)
+    installVersion: (packageName, version) => {
+      calls.installVersion.push({ packageName, version })
       return true
     },
     relaunch: (command, args) => {
@@ -135,8 +135,8 @@ describe("compareVersions", () => {
 })
 
 describe("getInstallTarget", () => {
-  test("pins the global upgrade to the named GitHub package", () => {
-    expect(getInstallTarget("vispark-code")).toBe("vispark-code@github:the-vispark/vispark-code")
+  test("pins the global upgrade to the published npm package version", () => {
+    expect(getInstallTarget("vispark-code", "0.4.0")).toBe("vispark-code@0.4.0")
   })
 })
 
@@ -159,7 +159,7 @@ describe("runCli", () => {
 
     expect(result.kind).toBe("started")
     expect(calls.fetchLatestVersion).toEqual(["vispark-code"])
-    expect(calls.installLatest).toEqual([])
+    expect(calls.installVersion).toEqual([])
     expect(calls.relaunch).toEqual([])
     expect(calls.startServer).toEqual([{ port: 4000, host: "127.0.0.1", openBrowser: false, strictPort: false }])
     expect(calls.openUrl).toEqual([])
@@ -215,7 +215,7 @@ describe("runCli", () => {
     const result = await runCli(["--port", "4000", "--no-open"], deps)
 
     expect(result).toEqual({ kind: "exited", code: 0 })
-    expect(calls.installLatest).toEqual(["vispark-code"])
+    expect(calls.installVersion).toEqual([{ packageName: "vispark-code", version: "0.4.0" }])
     expect(calls.relaunch).toEqual([{ command: "vispark-code", args: ["--port", "4000", "--no-open"] }])
     expect(calls.startServer).toEqual([])
   })
@@ -226,8 +226,8 @@ describe("runCli", () => {
         calls.fetchLatestVersion.push(packageName)
         return "0.4.0"
       },
-      installLatest: (packageName) => {
-        calls.installLatest.push(packageName)
+      installVersion: (packageName, version) => {
+        calls.installVersion.push({ packageName, version })
         return false
       },
     })
@@ -235,7 +235,7 @@ describe("runCli", () => {
     const result = await runCli(["--no-open"], deps)
 
     expect(result.kind).toBe("started")
-    expect(calls.installLatest).toEqual(["vispark-code"])
+    expect(calls.installVersion).toEqual([{ packageName: "vispark-code", version: "0.4.0" }])
     expect(calls.relaunch).toEqual([])
     expect(calls.warn).toContain("[vispark-code] update failed, continuing current version")
   })
@@ -251,7 +251,7 @@ describe("runCli", () => {
     const result = await runCli(["--no-open"], deps)
 
     expect(result.kind).toBe("started")
-    expect(calls.installLatest).toEqual([])
+    expect(calls.installVersion).toEqual([])
     expect(calls.relaunch).toEqual([])
     expect(calls.warn).toContain("[vispark-code] update check failed, continuing current version")
   })

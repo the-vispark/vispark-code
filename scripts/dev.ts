@@ -42,18 +42,18 @@ const devHostConfig = getDevHostConfig(forwardedArgs)
 
 const clientEnv = {
   ...process.env,
-  "VISPARK-CODE_DISABLE_SELF_UPDATE": "1",
+  VISPARK_CODE_DISABLE_SELF_UPDATE: "1",
   VISPARK_DEV_CLIENT_PORT: String(clientPort),
-  "VISPARK-CODE_DEV_ALLOWED_HOSTS": typeof devHostConfig.allowedHosts === "boolean"
+  VISPARK_DEV_ALLOWED_HOSTS: typeof devHostConfig.allowedHosts === "boolean"
     ? String(devHostConfig.allowedHosts)
     : JSON.stringify(devHostConfig.allowedHosts),
-  "VISPARK-CODE_DEV_BACKEND_TARGET_HOST": devHostConfig.backendTargetHost,
-  "VISPARK-CODE_DEV_BACKEND_PORT": String(serverPort),
+  VISPARK_DEV_BACKEND_TARGET_HOST: devHostConfig.backendTargetHost,
+  VISPARK_DEV_BACKEND_PORT: String(serverPort),
 }
 
 const serverEnv = {
   ...process.env,
-  "VISPARK-CODE_DISABLE_SELF_UPDATE": "1",
+  VISPARK_CODE_DISABLE_SELF_UPDATE: "1",
   VISPARK_DEV_CLIENT_PORT: String(clientPort),
 }
 

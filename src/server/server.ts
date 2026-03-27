@@ -190,7 +190,7 @@ async function serveStatic(distDir: string, pathname: string) {
   }
 
   return new Response(
-    `${APP_NAME} client bundle not found. Run \`bun run build\` inside workbench/ first.`,
+    `${APP_NAME} client bundle not found. Reinstall the package, or if you're running from source, run \`bun run build\` in the package root first.`,
     { status: 503 }
   )
 }

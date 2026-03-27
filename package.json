@@ -1,7 +1,7 @@
 {
   "name": "vispark-code",
   "type": "module",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "A local-first coding assistant powered by Vispark Vision",
   "license": "MIT",
   "keywords": [

@@ -5,7 +5,7 @@ import { DEV_CLIENT_PORT } from "./src/shared/ports"
 
 function getAllowedHosts() {
   const defaults = ["localhost", "127.0.0.1", "0.0.0.0"]
-  const configured = process.env["VISPARK-CODE_DEV_ALLOWED_HOSTS"]
+  const configured = process.env.VISPARK_DEV_ALLOWED_HOSTS
   if (!configured) return defaults
   if (configured === "true") return true
 
@@ -20,11 +20,11 @@ function getAllowedHosts() {
 }
 
 function getBackendTargetHost() {
-  return process.env["VISPARK-CODE_DEV_BACKEND_TARGET_HOST"] || "127.0.0.1"
+  return process.env.VISPARK_DEV_BACKEND_TARGET_HOST || "127.0.0.1"
 }
 
 function getBackendPort() {
-  const configured = Number(process.env["VISPARK-CODE_DEV_BACKEND_PORT"])
+  const configured = Number(process.env.VISPARK_DEV_BACKEND_PORT)
   return Number.isFinite(configured) && configured > 0 ? configured : getDefaultDevServerPort(DEV_CLIENT_PORT)
 }
 

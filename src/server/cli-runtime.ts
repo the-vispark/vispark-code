@@ -36,7 +36,7 @@ export interface CliRuntimeDeps {
   bunVersion: string
   startServer: (options: CliOptions) => Promise<{ port: number; stop: () => Promise<void> }>
   fetchLatestVersion: (packageName: string) => Promise<string>
-  installLatest: (packageName: string) => boolean
+  installVersion: (packageName: string, version: string) => boolean
   relaunch: (command: string, args: string[]) => number | null
   openUrl: (url: string) => void
   log: (message: string) => void
@@ -49,8 +49,6 @@ type ParsedArgs =
   | { kind: "version" }
 
 const MINIMUM_BUN_VERSION = "1.3.5"
-const PACKAGE_SOURCE = "github:the-vispark/vispark-code"
-
 function printHelp() {
   console.log(`${APP_NAME} — local-only project chat UI
 
@@ -147,7 +145,7 @@ function normalizeVersion(version: string) {
 }
 
 async function maybeSelfUpdate(argv: string[], deps: CliRuntimeDeps) {
-  if (process.env["VISPARK-CODE_DISABLE_SELF_UPDATE"] === "1") {
+  if (process.env.VISPARK_CODE_DISABLE_SELF_UPDATE === "1") {
     return null
   }
 
@@ -170,7 +168,7 @@ async function maybeSelfUpdate(argv: string[], deps: CliRuntimeDeps) {
   }
 
   deps.log(`${LOG_PREFIX} updating to ${latestVersion}`)
-  if (!deps.installLatest(PACKAGE_NAME)) {
+  if (!deps.installVersion(PACKAGE_NAME, latestVersion)) {
     deps.warn(`${LOG_PREFIX} update failed, continuing current version`)
     return null
   }
@@ -239,28 +237,29 @@ export function openUrl(url: string) {
 }
 
 export async function fetchLatestPackageVersion(_packageName: string) {
-  const response = await fetch("https://raw.githubusercontent.com/the-vispark/vispark-code/main/package.json")
+  const response = await fetch(`https://registry.npmjs.org/${PACKAGE_NAME}/latest`)
   if (!response.ok) {
-    throw new Error(`github fetch returned ${response.status}`)
+    throw new Error(`npm registry fetch returned ${response.status}`)
   }
 
   const payload = await response.json() as { version?: unknown }
   if (typeof payload.version !== "string" || !payload.version.trim()) {
-    throw new Error("github response did not include a version")
+    throw new Error("npm registry response did not include a version")
   }
 
   return payload.version
 }
 
-export function getInstallTarget(packageName: string) {
-  return `${packageName}@${PACKAGE_SOURCE}`
+export function getInstallTarget(packageName: string, version: string) {
+  const normalizedVersion = version.trim()
+  return `${packageName}@${normalizedVersion || "latest"}`
 }
 
-export function installLatestPackage(packageName: string) {
+export function installPackageVersion(packageName: string, version: string) {
   if (!hasCommand("bun")) return false
-  // Use an explicit package name so Bun upgrades the existing global dependency
-  // instead of treating the GitHub repo as an anonymous package and looping.
-  const result = spawnSync("bun", ["install", "-g", getInstallTarget(packageName)], { stdio: "inherit" })
+  // Use an explicit package name and version so global self-updates track the
+  // published npm artifact that includes the built client bundle.
+  const result = spawnSync("bun", ["install", "-g", getInstallTarget(packageName, version)], { stdio: "inherit" })
   return result.status === 0
 }
 
