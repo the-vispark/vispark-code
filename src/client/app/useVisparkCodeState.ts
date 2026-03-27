@@ -58,13 +58,13 @@ export function shouldPinTranscriptToBottom(distanceFromBottom: number) {
 export function getUiUpdateRestartReconnectAction(
   phase: string | null,
   connectionStatus: SocketStatus
-): "none" | "awaiting_reconnect" | "navigate_changelog" {
+): "none" | "awaiting_reconnect" | "clear" {
   if (phase === "awaiting_disconnect" && connectionStatus === "disconnected") {
     return "awaiting_reconnect"
   }
 
   if (phase === "awaiting_reconnect" && connectionStatus === "connected") {
-    return "navigate_changelog"
+    return "clear"
   }
 
   return "none"
@@ -267,11 +267,10 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
       return
     }
 
-    if (reconnectAction === "navigate_changelog") {
+    if (reconnectAction === "clear") {
       clearUiUpdateRestartPhase()
-      navigate("/settings/changelog", { replace: true })
     }
-  }, [connectionStatus, navigate])
+  }, [connectionStatus])
 
   useEffect(() => {
     function handleWindowFocus() {

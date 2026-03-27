@@ -110,8 +110,8 @@ describe("getUiUpdateRestartReconnectAction", () => {
     expect(getUiUpdateRestartReconnectAction("awaiting_disconnect", "disconnected")).toBe("awaiting_reconnect")
   })
 
-  test("navigates to changelog after reconnect", () => {
-    expect(getUiUpdateRestartReconnectAction("awaiting_reconnect", "connected")).toBe("navigate_changelog")
+  test("clears the pending restart state after reconnect", () => {
+    expect(getUiUpdateRestartReconnectAction("awaiting_reconnect", "connected")).toBe("clear")
   })
 
   test("does nothing for unrelated phase and connection combinations", () => {
