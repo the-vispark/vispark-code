@@ -1,5 +1,7 @@
 import process from "node:process"
 import { spawnSync } from "node:child_process"
+import { existsSync } from "node:fs"
+import path from "node:path"
 import { hasCommand, spawnDetached } from "./process-utils"
 import { APP_NAME, CLI_COMMAND, getDataDirDisplay, LOG_PREFIX, PACKAGE_NAME } from "../shared/branding"
 import { PROD_SERVER_PORT } from "../shared/ports"
@@ -49,6 +51,49 @@ type ParsedArgs =
   | { kind: "version" }
 
 const MINIMUM_BUN_VERSION = "1.3.5"
+const INSTALL_REPAIR_ATTEMPTED_ENV_VAR = "VISPARK_CODE_INSTALL_REPAIR_ATTEMPTED"
+
+function getPackageRoot() {
+  return path.resolve(import.meta.dir, "..", "..")
+}
+
+function hasClientBundle(packageRoot = getPackageRoot()) {
+  return existsSync(path.join(packageRoot, "dist", "client", "index.html"))
+}
+
+function isSourceCheckout(packageRoot = getPackageRoot()) {
+  return existsSync(path.join(packageRoot, ".git"))
+}
+
+function maybeRepairMissingClientBundle(argv: string[], deps: CliRuntimeDeps) {
+  const packageRoot = getPackageRoot()
+  if (hasClientBundle(packageRoot) || isSourceCheckout(packageRoot)) {
+    return null
+  }
+
+  if (process.env[INSTALL_REPAIR_ATTEMPTED_ENV_VAR] === "1") {
+    deps.warn(`${LOG_PREFIX} installed client bundle is still missing after an automatic repair attempt`)
+    return null
+  }
+
+  deps.warn(`${LOG_PREFIX} installed client bundle is missing, reinstalling ${PACKAGE_NAME}@${deps.version}`)
+  if (!deps.installVersion(PACKAGE_NAME, deps.version)) {
+    deps.warn(`${LOG_PREFIX} repair install failed, continuing current version`)
+    return null
+  }
+
+  deps.log(`${LOG_PREFIX} restarting after repair install`)
+  process.env[INSTALL_REPAIR_ATTEMPTED_ENV_VAR] = "1"
+  const exitCode = deps.relaunch(CLI_COMMAND, argv)
+  delete process.env[INSTALL_REPAIR_ATTEMPTED_ENV_VAR]
+  if (exitCode === null) {
+    deps.warn(`${LOG_PREFIX} restart after repair failed, continuing current version`)
+    return null
+  }
+
+  return exitCode
+}
+
 function printHelp() {
   console.log(`${APP_NAME} — local-only project chat UI
 
@@ -199,6 +244,11 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
     return { kind: "exited", code: 1 }
   }
 
+  const repairExitCode = maybeRepairMissingClientBundle(argv, deps)
+  if (repairExitCode !== null) {
+    return { kind: "exited", code: repairExitCode }
+  }
+
   const relaunchExitCode = await maybeSelfUpdate(argv, deps)
   if (relaunchExitCode !== null) {
     return { kind: "exited", code: relaunchExitCode }
@@ -259,7 +309,7 @@ export function installPackageVersion(packageName: string, version: string) {
   if (!hasCommand("bun")) return false
   // Use an explicit package name and version so global self-updates track the
   // published npm artifact that includes the built client bundle.
-  const result = spawnSync("bun", ["install", "-g", getInstallTarget(packageName, version)], { stdio: "inherit" })
+  const result = spawnSync("bun", ["install", "-g", "--force", getInstallTarget(packageName, version)], { stdio: "inherit" })
   return result.status === 0
 }
 
