@@ -14,9 +14,7 @@ export type RuntimeProfile = "prod" | "dev"
 type EnvLike = Record<string, string | undefined>
 
 export function getRuntimeProfile(env: EnvLike = process.env): RuntimeProfile {
-  return env.VISPARK_RUNTIME_PROFILE === "dev"
-    || env.VISPARK_CODE_RUNTIME_PROFILE === "dev"
-    || env["VISPARK-CODE_RUNTIME_PROFILE"] === "dev"
+  return env.VISPARK_RUNTIME_PROFILE === "dev" || env["VISPARK-CODE_RUNTIME_PROFILE"] === "dev"
     ? "dev"
     : "prod"
 }

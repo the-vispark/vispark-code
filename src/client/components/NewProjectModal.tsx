@@ -9,6 +9,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from "./ui/dialog"
+import { Input } from "./ui/input"
 import { SegmentedControl } from "./ui/segmented-control"
 
 interface Props {
@@ -103,13 +104,13 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, onPickDirectory
               { value: "new" as Tab, label: "New Folder" },
               { value: "existing" as Tab, label: "Existing Path" },
             ]}
-            className="w-full"
+            className="w-full mb-2"
             optionClassName="flex-1 justify-center"
           />
 
           {tab === "new" ? (
             <div className="space-y-2">
-              <input
+              <Input
                 ref={inputRef}
                 type="text"
                 value={name}
@@ -118,7 +119,6 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, onPickDirectory
                   if (e.key === "Enter") handleSubmit()
                   if (e.key === "Escape") onOpenChange(false)
                 }}
-                className="w-full px-3 py-2 text-sm border border-border rounded-md bg-background outline-none"
                 placeholder="Project name"
               />
               {newPath && (
@@ -130,7 +130,7 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, onPickDirectory
           ) : (
             <div className="space-y-2">
               <div className="flex gap-2">
-                <input
+                <Input
                   ref={existingInputRef}
                   type="text"
                   value={existingPath}
@@ -139,7 +139,7 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, onPickDirectory
                     if (e.key === "Enter") handleSubmit()
                     if (e.key === "Escape") onOpenChange(false)
                   }}
-                  className="flex-1 px-3 py-2 text-sm border border-border rounded-md bg-background outline-none"
+                  className="flex-1"
                   placeholder="~/Projects/my-app"
                 />
                 <Button

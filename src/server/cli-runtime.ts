@@ -3,9 +3,11 @@ import { spawnSync } from "node:child_process"
 import { hasCommand, spawnDetached } from "./process-utils"
 import { APP_NAME, CLI_COMMAND, getDataDirDisplay, LOG_PREFIX, PACKAGE_NAME } from "../shared/branding"
 import { PROD_SERVER_PORT } from "../shared/ports"
+import { CLI_SUPPRESS_OPEN_ONCE_ENV_VAR } from "./restart"
 
 export interface CliOptions {
   port: number
+  host: string
   openBrowser: boolean
   strictPort: boolean
 }
@@ -56,15 +58,18 @@ Usage:
   ${CLI_COMMAND} [options]
 
 Options:
-  --port <number>  Port to listen on (default: ${PROD_SERVER_PORT})
-  --strict-port    Fail instead of trying another port
-  --no-open        Don't open browser automatically
-  --version        Print version and exit
-  --help           Show this help message`)
+  --port <number>      Port to listen on (default: ${PROD_SERVER_PORT})
+  --host <host>        Bind to a specific host or IP
+  --remote             Shortcut for --host 0.0.0.0
+  --strict-port        Fail instead of trying another port
+  --no-open            Don't open browser automatically
+  --version            Print version and exit
+  --help               Show this help message`)
 }
 
 export function parseArgs(argv: string[]): ParsedArgs {
   let port = PROD_SERVER_PORT
+  let host = "127.0.0.1"
   let openBrowser = true
   let strictPort = false
 
@@ -83,6 +88,17 @@ export function parseArgs(argv: string[]): ParsedArgs {
       index += 1
       continue
     }
+    if (arg === "--host") {
+      const next = argv[index + 1]
+      if (!next || next.startsWith("-")) throw new Error("Missing value for --host")
+      host = next
+      index += 1
+      continue
+    }
+    if (arg === "--remote") {
+      host = "0.0.0.0"
+      continue
+    }
     if (arg === "--no-open") {
       openBrowser = false
       continue
@@ -98,6 +114,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     kind: "run",
     options: {
       port,
+      host,
       openBrowser,
       strictPort,
     },
@@ -130,6 +147,10 @@ function normalizeVersion(version: string) {
 }
 
 async function maybeSelfUpdate(argv: string[], deps: CliRuntimeDeps) {
+  if (process.env["VISPARK-CODE_DISABLE_SELF_UPDATE"] === "1") {
+    return null
+  }
+
   deps.log(`${LOG_PREFIX} checking for updates`)
 
   let latestVersion: string
@@ -186,13 +207,16 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
   }
 
   const { port, stop } = await deps.startServer(parsedArgs.options)
-  const url = `http://localhost:${port}`
-  const launchUrl = url
+  const bindHost = parsedArgs.options.host
+  const displayHost = bindHost === "127.0.0.1" || bindHost === "0.0.0.0" ? "localhost" : bindHost
+  const url = `http://${bindHost}:${port}`
+  const launchUrl = `http://${displayHost}:${port}`
 
   deps.log(`${LOG_PREFIX} listening on ${url}`)
   deps.log(`${LOG_PREFIX} data dir: ${getDataDirDisplay()}`)
 
-  if (parsedArgs.options.openBrowser) {
+  const suppressOpenBrowser = process.env[CLI_SUPPRESS_OPEN_ONCE_ENV_VAR] === "1"
+  if (parsedArgs.options.openBrowser && !suppressOpenBrowser) {
     deps.openUrl(launchUrl)
   }
 

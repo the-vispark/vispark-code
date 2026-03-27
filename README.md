@@ -46,7 +46,6 @@ Vispark Code opens at `http://localhost:3210`.
 
 Vispark Code stores state in `~/.vispark-code/data/`.
 
-
 ## Development
 
 ```bash
@@ -62,6 +61,16 @@ bun run dev:client
 bun run dev:server
 bun run sync:sources
 ```
+
+For network access, Vispark Code binds to `127.0.0.1` by default. Use `--host <hostname-or-ip>` to bind a specific interface, or `--remote` to bind `0.0.0.0`.
+
+```bash
+vispark-code --remote
+vispark-code --host dev-box
+vispark-code --host 192.168.1.x
+```
+
+The same host flags work in development, and `bun run dev --port 4000` runs the Vite client on `4000` and the backend on `4001`.
 
 ## Project Structure
 

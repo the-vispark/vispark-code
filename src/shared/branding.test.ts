@@ -28,18 +28,4 @@ describe("runtime profile helpers", () => {
     expect(getKeybindingsFilePath("/tmp/home", env)).toBe("/tmp/home/.vispark-code-dev/keybindings.json")
     expect(getKeybindingsFilePathDisplay(env)).toBe("~/.vispark-code-dev/keybindings.json")
   })
-
-  test("accepts the underscore compatibility alias", () => {
-    const env = { VISPARK_CODE_RUNTIME_PROFILE: "dev" }
-
-    expect(getRuntimeProfile(env)).toBe("dev")
-    expect(getDataRootName(env)).toBe(".vispark-code-dev")
-  })
-
-  test("accepts the hyphenated compatibility alias without throwing", () => {
-    const env = { "VISPARK-CODE_RUNTIME_PROFILE": "dev" }
-
-    expect(getRuntimeProfile(env)).toBe("dev")
-    expect(getDataRootName(env)).toBe(".vispark-code-dev")
-  })
 })

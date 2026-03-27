@@ -72,7 +72,11 @@ async function runStructured(args: Omit<StructuredQuickResponseArgs<unknown>, "p
       })()
     })
   } finally {
-    q.close()
+    try {
+      q.close()
+    } catch {
+      // Ignore close failures on timed-out or failed quick responses.
+    }
   }
 }
 
@@ -82,7 +86,6 @@ export class QuickResponseAdapter {
   constructor(args: QuickResponseAdapterArgs = {}) {
     this.runStructured = args.runStructured ?? runStructured
   }
-
   async generateStructured<T>(args: StructuredQuickResponseArgs<T>): Promise<T | null> {
     return await this.tryProvider(args.parse, () => this.runStructured({
       cwd: args.cwd,

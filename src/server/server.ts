@@ -18,11 +18,13 @@ import { clearSourceSyncData } from "./source-sync"
 
 export interface StartVisparkCodeServerOptions {
   port?: number
+  host?: string
   strictPort?: boolean
 }
 
 export async function startVisparkCodeServer(options: StartVisparkCodeServerOptions = {}) {
   const port = options.port ?? 3210
+  const hostname = options.host ?? "127.0.0.1"
   const strictPort = options.strictPort ?? false
   const devClientPort = Number.parseInt(process.env.VISPARK_DEV_CLIENT_PORT ?? "", 10)
   const devClientOrigin = Number.isFinite(devClientPort) ? `http://localhost:${devClientPort || DEV_CLIENT_PORT}` : null
@@ -101,6 +103,7 @@ export async function startVisparkCodeServer(options: StartVisparkCodeServerOpti
     try {
       server = Bun.serve<ClientState>({
         port: actualPort,
+        hostname,
         fetch(req, serverInstance) {
           const url = new URL(req.url)
 

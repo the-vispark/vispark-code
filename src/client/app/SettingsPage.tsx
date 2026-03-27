@@ -23,6 +23,7 @@ import {
 } from "../../shared/types"
 import { markdownComponents } from "../components/messages/shared"
 import { buttonVariants, Button } from "../components/ui/button"
+import { Input } from "../components/ui/input"
 import type { EditorPreset } from "../../shared/protocol"
 import { SegmentedControl } from "../components/ui/segmented-control"
 import { useAppDialog } from "../components/ui/app-dialog"
@@ -711,7 +712,7 @@ export function SettingsPage() {
                     <div className="flex items-center gap-2">
                       {isEditingVisionApiKey || !visionApiKeyDraft ? (
                         <>
-                          <input
+                          <Input
                             type="password"
                             value={visionApiKeyDraft}
                             placeholder="vl_your_api_key"
@@ -728,7 +729,7 @@ export function SettingsPage() {
                                 void saveVisionApiKey()
                               })
                             }
-                            className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm text-foreground outline-none"
+                            className="font-mono"
                           />
                           <button
                             type="button"
@@ -853,13 +854,13 @@ export function SettingsPage() {
                         </div>
                       </div>
                       <div className="flex min-w-0 w-full flex-col items-stretch gap-2 sm:max-w-[420px] sm:flex-1">
-                        <input
+                        <Input
                           type="text"
                           value={editorCommandDraft}
                           onChange={(event) => setEditorCommandDraft(event.target.value)}
                           onBlur={commitEditorCommand}
                           onKeyDown={(event) => handleTextInputKeyDown(event, commitEditorCommand)}
-                          className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm text-foreground outline-none"
+                          className="font-mono"
                         />
                         <div className="text-xs text-muted-foreground">
                           Preview: <span className="font-mono">{customEditorPreview}</span>
@@ -874,7 +875,7 @@ export function SettingsPage() {
                   description="Lines retained for embedded terminal history"
                 >
                   <div className="flex min-w-0 flex-col items-start gap-2 sm:items-end">
-                    <input
+                    <Input
                       type="number"
                       min={MIN_TERMINAL_SCROLLBACK}
                       max={MAX_TERMINAL_SCROLLBACK}
@@ -883,7 +884,7 @@ export function SettingsPage() {
                       onChange={(event) => setScrollbackDraft(event.target.value)}
                       onBlur={commitScrollback}
                       onKeyDown={(event) => handleNumberInputKeyDown(event, commitScrollback)}
-                      className="hide-number-steppers w-28 rounded-lg border border-border bg-background px-3 py-2 text-right font-mono text-sm text-foreground outline-none"
+                      className="hide-number-steppers w-28 text-right font-mono"
                     />
                     <div className="text-left text-xs text-muted-foreground sm:text-right">
                       {MIN_TERMINAL_SCROLLBACK}-{MAX_TERMINAL_SCROLLBACK} lines
@@ -897,7 +898,7 @@ export function SettingsPage() {
                   description="Minimum width for each terminal pane"
                 >
                   <div className="flex min-w-0 flex-col items-start gap-2 sm:items-end">
-                    <input
+                    <Input
                       type="number"
                       min={MIN_TERMINAL_MIN_COLUMN_WIDTH}
                       max={MAX_TERMINAL_MIN_COLUMN_WIDTH}
@@ -906,7 +907,7 @@ export function SettingsPage() {
                       onChange={(event) => setMinColumnWidthDraft(event.target.value)}
                       onBlur={commitMinColumnWidth}
                       onKeyDown={(event) => handleNumberInputKeyDown(event, commitMinColumnWidth)}
-                      className="hide-number-steppers w-28 rounded-lg border border-border bg-background px-3 py-2 text-right font-mono text-sm text-foreground outline-none"
+                      className="hide-number-steppers w-28 text-right font-mono"
                     />
                     <div className="text-left text-xs text-muted-foreground sm:text-right">
                       {MIN_TERMINAL_MIN_COLUMN_WIDTH}-{MAX_TERMINAL_MIN_COLUMN_WIDTH} px
@@ -974,7 +975,7 @@ export function SettingsPage() {
                       )}
                     >
                       <div className="flex min-w-0 w-full flex-col items-stretch gap-2 sm:max-w-[420px] sm:flex-1">
-                        <input
+                        <Input
                           type="text"
                           value={currentValue}
                           onChange={(event) => {
@@ -987,7 +988,7 @@ export function SettingsPage() {
                           onKeyDown={(event) => handleTextInputKeyDown(event, () => {
                             void commitKeybindings()
                           })}
-                          className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm text-foreground outline-none"
+                          className="font-mono"
                         />
                       </div>
                     </SettingsRow>
