@@ -11,7 +11,7 @@ function VisparkCodeLayout() {
   const location = useLocation()
   const params = useParams()
   const state = useVisparkCodeState(params.chatId ?? null)
-  const showMobileOpenButton = location.pathname === "/" || location.pathname.startsWith("/settings")
+  const showMobileOpenButton = location.pathname === "/"
 
   return (
     <div className="flex h-[100dvh] min-h-[100dvh] overflow-hidden">
@@ -53,8 +53,8 @@ export function App() {
         <Routes>
           <Route element={<VisparkCodeLayout />}>
             <Route path="/" element={<LocalProjectsPage />} />
-            <Route path="/settings" element={<Navigate to="/settings/general" replace />} />
-            <Route path="/settings/:sectionId" element={<SettingsPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/settings/:sectionId" element={<Navigate to="/settings" replace />} />
             <Route path="/chat/:chatId" element={<ChatPage />} />
           </Route>
         </Routes>

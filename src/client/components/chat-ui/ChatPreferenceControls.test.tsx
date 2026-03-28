@@ -45,4 +45,24 @@ describe("ChatPreferenceControls", () => {
     expect(html).toContain("Learning Off")
     expect(html).toContain("Plan Mode")
   })
+
+  test("keeps the locked vision provider visible without faded disabled styling", () => {
+    const html = renderToStaticMarkup(
+      <ChatPreferenceControls
+        availableProviders={PROVIDERS}
+        selectedProvider="vision"
+        providerLocked
+        model="vispark/vision-medium"
+        modelOptions={{ continualLearning: false }}
+        onProviderChange={() => {}}
+        onModelChange={() => {}}
+        onVisionContinualLearningChange={() => {}}
+        includePlanMode={false}
+      />
+    )
+
+    expect(html).toContain("Vision")
+    expect(html).toContain("disabled")
+    expect(html).not.toContain("opacity-70")
+  })
 })

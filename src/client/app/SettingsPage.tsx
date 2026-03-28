@@ -1,19 +1,15 @@
 import { useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from "react"
 import {
-  BookText,
   ChevronRight,
-  Command,
   Info,
   Loader2,
   Monitor,
   Moon,
-  MessageSquareQuote,
-  Settings2,
   Sun,
 } from "lucide-react"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { useNavigate, useOutletContext, useParams } from "react-router-dom"
+import { useOutletContext } from "react-router-dom"
 import { getKeybindingsFilePathDisplay } from "../../shared/branding"
 import {
   type AppSettingsSnapshot,
@@ -42,41 +38,6 @@ import {
 import { useChatPreferencesStore } from "../stores/chatPreferencesStore"
 import type { VisparkCodeState } from "./useVisparkCodeState"
 
-const sidebarItems = [
-  {
-    id: "general",
-    label: "General",
-    icon: Settings2,
-    subtitle: "Manage appearance, editor behavior, and embedded terminal defaults.",
-  },
-  {
-    id: "providers",
-    label: "Providers",
-    icon: MessageSquareQuote,
-    subtitle: "Manage Vision model defaults, continual learning, and plan mode.",
-  },
-  {
-    id: "keybindings",
-    label: "Keybindings",
-    icon: Command,
-    subtitle: "Edit global app shortcuts stored in the active keybindings file.",
-  },
-  // always last
-  {
-    id: "changelog",
-    label: "Changelog",
-    icon: BookText,
-    subtitle: "Release notes pulled from the public GitHub releases feed.",
-  },
-] as const
-type SidebarItem = (typeof sidebarItems)[number]
-type SidebarPageId = SidebarItem["id"]
-
-export function resolveSettingsSectionId(sectionId: string | undefined): SidebarPageId | null {
-  if (!sectionId) return null
-  return sidebarItems.some((item) => item.id === sectionId) ? (sectionId as SidebarPageId) : null
-}
-
 const themeOptions = [
   { value: "light" as ThemePreference, label: "Light", icon: Sun },
   { value: "dark" as ThemePreference, label: "Dark", icon: Moon },
@@ -101,6 +62,11 @@ const CLIENT_RESET_STORAGE_KEYS = [
 ] as const
 
 const continualLearningOptions = [
+  { value: "on" as const, label: "On" },
+  { value: "off" as const, label: "Off" },
+]
+
+const transcriptAutoScrollOptions = [
   { value: "on" as const, label: "On" },
   { value: "off" as const, label: "Off" },
 ]
@@ -397,27 +363,26 @@ function SettingsRow({
 }) {
   return (
     <div className={bordered ? "border-t border-border" : undefined}>
-      <div className={`flex justify-between gap-8 py-5 ${alignStart ? "items-start" : "items-center"}`}>
+      <div
+        className={cn(
+          "flex flex-col gap-4 py-5 md:flex-row md:justify-between md:gap-8",
+          alignStart ? "md:items-start" : "md:items-center"
+        )}
+      >
         <div className="min-w-0 max-w-xl">
           <div className="text-sm font-medium text-foreground">{title}</div>
           <div className="mt-1 text-[13px] text-muted-foreground">{description}</div>
         </div>
-        <div className="flex shrink-0 items-center justify-end">{children}</div>
+        <div className="flex items-center justify-start md:shrink-0 md:justify-end">{children}</div>
       </div>
     </div>
   )
 }
 
 export function SettingsPage() {
-  const navigate = useNavigate()
-  const { sectionId } = useParams<{ sectionId: string }>()
   const state = useOutletContext<VisparkCodeState>()
   const dialog = useAppDialog()
   const { theme, setTheme } = useTheme()
-  const [changelogStatus, setChangelogStatus] = useState<ChangelogStatus>("idle")
-  const [releases, setReleases] = useState<GithubRelease[]>([])
-  const [changelogError, setChangelogError] = useState<string | null>(null)
-  const selectedPage = resolveSettingsSectionId(sectionId) ?? "general"
   const isConnecting = state.connectionStatus === "connecting" || !state.localProjectsReady
   const scrollbackLines = useTerminalPreferencesStore((store) => store.scrollbackLines)
   const minColumnWidth = useTerminalPreferencesStore((store) => store.minColumnWidth)
@@ -429,7 +394,9 @@ export function SettingsPage() {
   const setEditorCommandTemplate = useTerminalPreferencesStore((store) => store.setEditorCommandTemplate)
   const keybindings = state.keybindings
   const visionContinualLearning = useChatPreferencesStore((store) => store.providerDefaults.vision.modelOptions.continualLearning)
-  const setProviderDefaultModelOptions = useChatPreferencesStore((store) => store.setProviderDefaultModelOptions)
+  const transcriptAutoScroll = useChatPreferencesStore((store) => store.transcriptAutoScroll)
+  const setVisionContinualLearningPreference = useChatPreferencesStore((store) => store.setVisionContinualLearningPreference)
+  const setTranscriptAutoScroll = useChatPreferencesStore((store) => store.setTranscriptAutoScroll)
   const resolvedKeybindings = useMemo(() => getResolvedKeybindings(keybindings), [keybindings])
   const keybindingsFilePathDisplay = resolvedKeybindings.filePathDisplay || getKeybindingsFilePathDisplay()
   const [scrollbackDraft, setScrollbackDraft] = useState(String(scrollbackLines))
@@ -467,12 +434,6 @@ export function SettingsPage() {
   }, [resolvedKeybindings])
 
   useEffect(() => {
-    if (!sectionId) return
-    if (resolveSettingsSectionId(sectionId)) return
-    navigate("/settings/general", { replace: true })
-  }, [navigate, sectionId])
-
-  useEffect(() => {
     if (isConnecting) return
 
     let cancelled = false
@@ -495,30 +456,6 @@ export function SettingsPage() {
       cancelled = true
     }
   }, [isConnecting, state.socket])
-
-  useEffect(() => {
-    if (selectedPage !== "changelog" || isConnecting) return
-
-    let cancelled = false
-    setChangelogStatus("loading")
-    setChangelogError(null)
-
-    void loadChangelog()
-      .then((nextReleases) => {
-        if (cancelled) return
-        setReleases(nextReleases)
-        setChangelogStatus("success")
-      })
-      .catch((error: unknown) => {
-        if (cancelled) return
-        setChangelogError(error instanceof Error ? error.message : "Unable to load changelog.")
-        setChangelogStatus("error")
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [isConnecting, selectedPage])
 
   function commitScrollback() {
     const nextValue = Number(scrollbackDraft)
@@ -626,22 +563,6 @@ export function SettingsPage() {
     }
   }
 
-  function retryChangelog() {
-    changelogCache = null
-    setChangelogStatus("loading")
-    setChangelogError(null)
-
-    void loadChangelog({ force: true })
-      .then((nextReleases) => {
-        setReleases(nextReleases)
-        setChangelogStatus("success")
-      })
-      .catch((error: unknown) => {
-        setChangelogError(error instanceof Error ? error.message : "Unable to load changelog.")
-        setChangelogStatus("error")
-      })
-  }
-
   const customEditorPreview = editorCommandDraft
     .replaceAll("{path}", "/Users/vispark/Code/vispark-code/src/client/app/App.tsx")
     .replaceAll("{line}", "12")
@@ -649,47 +570,31 @@ export function SettingsPage() {
   const effectiveVisionWeightsPath = visionWeightsPath || FALLBACK_VISION_WEIGHTS_PATH
 
   return (
-    <div className="relative flex h-full flex-1 min-w-0 overflow-y-auto bg-background">
-      <div className="w-full px-4 pb-10 pt-8 sm:px-6 sm:pt-16">
-        {isConnecting ? (
-          <div className="mx-auto max-w-4xl">
-            <div className="flex min-h-[240px] items-center justify-center rounded-2xl border border-border bg-card/40 px-4 py-6 text-sm text-muted-foreground">
-              <div className="flex items-center gap-3">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                <span>Loading machine settings…</span>
+    <div className="relative flex h-full flex-1 min-w-0 bg-background">
+      <div className="min-w-0 flex-1 overflow-y-auto">
+        <div className="w-full px-4 pb-10 pt-8 md:px-6 md:pt-16">
+          {isConnecting ? (
+            <div className="mx-auto max-w-4xl">
+              <div className="flex min-h-[240px] items-center justify-center rounded-2xl border border-border bg-card/40 px-4 py-6 text-sm text-muted-foreground">
+                <div className="flex items-center gap-3">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span>Loading machine settings…</span>
+                </div>
               </div>
             </div>
-          </div>
-        ) : selectedPage === "changelog" ? (
-          <div className="mx-auto max-w-4xl">
-            <div className="pb-8">
-              <div className="text-3xl font-bold tracking-tight text-foreground">
-                Changelog
+          ) : (
+            <div className="mx-auto max-w-4xl">
+              <div className="pb-8">
+                <div className="text-3xl font-bold tracking-tight text-foreground">
+                  Settings
+                </div>
+                <div className="mt-1 text-sm text-muted-foreground">
+                  Manage appearance, editor behavior, and embedded terminal defaults.
+                </div>
               </div>
-              <div className="mt-1 text-sm text-muted-foreground">
-                Release notes pulled from the public GitHub releases feed.
-              </div>
-            </div>
-            <ChangelogSection
-              status={changelogStatus}
-              releases={releases}
-              error={changelogError}
-              onRetry={retryChangelog}
-            />
-          </div>
-        ) : (
-          <div className="mx-auto max-w-4xl">
-            <div className="pb-8">
-              <div className="text-3xl font-bold tracking-tight text-foreground">
-                Settings
-              </div>
-              <div className="mt-1 text-sm text-muted-foreground">
-                Manage appearance, editor behavior, and embedded terminal defaults.
-              </div>
-            </div>
 
-            <div className="space-y-4">
-              <SettingsSection title="Vision & CL" defaultExpanded>
+              <div className="space-y-4">
+                <SettingsSection title="Vision & CL" defaultExpanded>
                 <SettingsRow
                   title="Vispark Lab API Key"
                   description={(
@@ -802,7 +707,7 @@ export function SettingsPage() {
                       <SegmentedControl
                         value={visionContinualLearning ? "on" : "off"}
                         onValueChange={(value) => {
-                          setProviderDefaultModelOptions("vision", { continualLearning: value === "on" })
+                          setVisionContinualLearningPreference(value === "on")
                         }}
                         options={continualLearningOptions}
                         size="sm"
@@ -822,6 +727,18 @@ export function SettingsPage() {
                     value={theme}
                     onValueChange={setTheme}
                     options={themeOptions}
+                    size="sm"
+                  />
+                </SettingsRow>
+
+                <SettingsRow
+                  title="Transcript Auto-Scroll"
+                  description="Control whether chat transcripts automatically jump to the latest message."
+                >
+                  <SegmentedControl
+                    value={transcriptAutoScroll ? "on" : "off"}
+                    onValueChange={(value) => setTranscriptAutoScroll(value === "on")}
+                    options={transcriptAutoScrollOptions}
                     size="sm"
                   />
                 </SettingsRow>
@@ -1019,16 +936,17 @@ export function SettingsPage() {
                   </div>
                 </SettingsRow>
               </SettingsSection>
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {state.commandError ? (
-          <div className="mx-auto mt-4 flex max-w-4xl items-start gap-3 rounded-2xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-            <Info className="mt-0.5 h-4 w-4 flex-shrink-0" />
-            <span>{state.commandError}</span>
-          </div>
-        ) : null}
+          {state.commandError ? (
+            <div className="mx-auto mt-4 flex max-w-4xl items-start gap-3 rounded-2xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+              <Info className="mt-0.5 h-4 w-4 flex-shrink-0" />
+              <span>{state.commandError}</span>
+            </div>
+          ) : null}
+        </div>
       </div>
     </div>
   )

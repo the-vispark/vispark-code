@@ -28,7 +28,7 @@ export type ComposerState = {
 
 type PersistedChatPreferencesState = Pick<
   ChatPreferencesState,
-  "defaultProvider" | "providerDefaults" | "composerState"
+  "defaultProvider" | "providerDefaults" | "composerState" | "transcriptAutoScroll"
 > & Partial<{
   liveProvider: AgentProvider
   livePreferences: ChatProviderPreferences
@@ -114,12 +114,16 @@ interface ChatPreferencesState {
   defaultProvider: DefaultProviderPreference
   providerDefaults: ChatProviderPreferences
   composerState: ComposerState
+  transcriptAutoScroll: boolean
   setDefaultProvider: (provider: DefaultProviderPreference) => void
+  setTranscriptAutoScroll: (enabled: boolean) => void
   setProviderDefaultModel: (provider: AgentProvider, model: string) => void
+  setVisionModelPreference: (model: string) => void
   setProviderDefaultModelOptions: <TProvider extends AgentProvider>(
     provider: TProvider,
     modelOptions: Partial<ProviderModelOptionsByProvider[TProvider]>
   ) => void
+  setVisionContinualLearningPreference: (enabled: boolean) => void
   setProviderDefaultPlanMode: (provider: AgentProvider, planMode: boolean) => void
   setComposerProvider: (provider: AgentProvider) => void
   setComposerModel: (model: string) => void
@@ -131,7 +135,7 @@ interface ChatPreferencesState {
 
 export function migrateChatPreferencesState(
   persistedState: Partial<PersistedChatPreferencesState> | undefined
-): Pick<ChatPreferencesState, "defaultProvider" | "providerDefaults" | "composerState"> {
+): Pick<ChatPreferencesState, "defaultProvider" | "providerDefaults" | "composerState" | "transcriptAutoScroll"> {
   const providerDefaults = normalizeProviderDefaults(persistedState?.providerDefaults)
 
   return {
@@ -143,6 +147,7 @@ export function migrateChatPreferencesState(
       persistedState?.liveProvider,
       persistedState?.livePreferences
     ),
+    transcriptAutoScroll: persistedState?.transcriptAutoScroll ?? true,
   }
 }
 
@@ -152,7 +157,9 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       defaultProvider: "last_used",
       providerDefaults: createDefaultProviderDefaults(),
       composerState: composerFromProviderDefaults(createDefaultProviderDefaults()),
+      transcriptAutoScroll: true,
       setDefaultProvider: (defaultProvider) => set({ defaultProvider }),
+      setTranscriptAutoScroll: (transcriptAutoScroll) => set({ transcriptAutoScroll }),
       setProviderDefaultModel: (_provider, model) =>
         set((state) => ({
           providerDefaults: {
@@ -160,6 +167,19 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
               ...state.providerDefaults.vision,
               model,
             }),
+          },
+        })),
+      setVisionModelPreference: (model) =>
+        set((state) => ({
+          providerDefaults: {
+            vision: normalizeVisionPreference({
+              ...state.providerDefaults.vision,
+              model,
+            }),
+          },
+          composerState: {
+            ...state.composerState,
+            model,
           },
         })),
       setProviderDefaultModelOptions: (_provider, modelOptions) =>
@@ -172,6 +192,25 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
                 ...(modelOptions as Partial<VisionModelOptions>),
               },
             }),
+          },
+        })),
+      setVisionContinualLearningPreference: (enabled) =>
+        set((state) => ({
+          providerDefaults: {
+            vision: normalizeVisionPreference({
+              ...state.providerDefaults.vision,
+              modelOptions: {
+                ...state.providerDefaults.vision.modelOptions,
+                continualLearning: enabled,
+              },
+            }),
+          },
+          composerState: {
+            ...state.composerState,
+            modelOptions: {
+              ...state.composerState.modelOptions,
+              continualLearning: enabled,
+            },
           },
         })),
       setProviderDefaultPlanMode: (_provider, planMode) =>
@@ -236,7 +275,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
     }),
     {
       name: "vispark-chat-preferences",
-      version: 1,
+      version: 2,
       migrate: (persistedState) =>
         migrateChatPreferencesState(persistedState as Partial<PersistedChatPreferencesState> | undefined),
     }

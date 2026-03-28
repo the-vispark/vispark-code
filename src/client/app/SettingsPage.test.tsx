@@ -10,7 +10,6 @@ import {
   getKeybindingsSubtitle,
   loadChangelog,
   resetSettingsPageChangelogCache,
-  resolveSettingsSectionId,
   setCachedChangelog,
 } from "./SettingsPage"
 import { SettingsHeaderButton } from "../components/ui/settings-header-button"
@@ -110,23 +109,6 @@ describe("changelog cache", () => {
     })
 
     expect(releases).toEqual([SAMPLE_RELEASES[1]])
-  })
-})
-
-describe("resolveSettingsSectionId", () => {
-  test("accepts known settings sections", () => {
-    expect(resolveSettingsSectionId("general")).toBe("general")
-    expect(resolveSettingsSectionId("providers")).toBe("providers")
-    expect(resolveSettingsSectionId("changelog")).toBe("changelog")
-    expect(resolveSettingsSectionId("keybindings")).toBe("keybindings")
-  })
-
-  test("rejects unknown settings sections", () => {
-    expect(resolveSettingsSectionId("page-1")).toBeNull()
-    expect(resolveSettingsSectionId("page-2")).toBeNull()
-    expect(resolveSettingsSectionId("page-3")).toBeNull()
-    expect(resolveSettingsSectionId("nope")).toBeNull()
-    expect(resolveSettingsSectionId(undefined)).toBeNull()
   })
 })
 

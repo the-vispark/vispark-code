@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test"
 import { normalizeServerModel, normalizeVisionModelOptions } from "./provider-catalog"
-
 describe("provider catalog normalization", () => {
   test("defaults to the medium Vision model", () => {
     expect(normalizeServerModel("vision", undefined)).toBe("vispark/vision-medium")
@@ -11,8 +10,8 @@ describe("provider catalog normalization", () => {
   })
 
   test("normalizes Vision model options", () => {
-    expect(normalizeVisionModelOptions(undefined)).toEqual({ continualLearning: true })
-    expect(normalizeVisionModelOptions({ vision: {} })).toEqual({ continualLearning: true })
+    expect(normalizeVisionModelOptions(undefined)).toEqual({ continualLearning: false })
+    expect(normalizeVisionModelOptions({ vision: {} })).toEqual({ continualLearning: false })
     expect(normalizeVisionModelOptions({ vision: { continualLearning: false } })).toEqual({ continualLearning: false })
   })
 })

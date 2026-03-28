@@ -1,4 +1,4 @@
-import { forwardRef, memo, useCallback, useEffect, useRef, useState } from "react"
+import { forwardRef, memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { ArrowUp } from "lucide-react"
 import {
   type AgentProvider,
@@ -92,7 +92,8 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
   const {
     composerState,
     providerDefaults,
-    setComposerModel,
+    setVisionModelPreference,
+    setVisionContinualLearningPreference,
     setComposerModelOptions,
     setComposerPlanMode,
     resetComposerFromProvider,
@@ -115,6 +116,10 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
   const autoResize = useCallback(() => {
     const element = textareaRef.current
     if (!element) return
+    if (element.value.length === 0) {
+      element.style.height = ""
+      return
+    }
     element.style.height = "auto"
     element.style.height = `${element.scrollHeight}px`
   }, [])
@@ -131,7 +136,7 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
     forwardedRef.current = node
   }, [forwardedRef])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     autoResize()
   }, [value, autoResize])
 
@@ -162,10 +167,16 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
           modelOptions: { ...next.modelOptions, ...modelOptions },
         }
       })
+    }
+
+    if (typeof modelOptions.continualLearning === "boolean") {
+      setVisionContinualLearningPreference(modelOptions.continualLearning)
       return
     }
 
-    setComposerModelOptions(modelOptions)
+    if (!providerLocked) {
+      setComposerModelOptions(modelOptions)
+    }
   }
 
   function setEffectivePlanMode(planMode: boolean) {
@@ -245,7 +256,7 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
         <div className="mx-auto mb-3 max-w-[840px] rounded-2xl border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-950 dark:text-amber-100">
           <span className="font-medium">Vispark Lab API key missing.</span>{" "}
           Add it in{" "}
-          <a href="/settings/general" className="underline underline-offset-4 hover:opacity-80">
+          <a href="/settings" className="underline underline-offset-4 hover:opacity-80">
             Settings
           </a>{" "}
           to start building.
@@ -291,35 +302,45 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
         </Button>
       </div>
 
-      <ChatPreferenceControls
-        availableProviders={availableProviders}
-        selectedProvider={selectedProvider}
-        providerLocked={providerLocked}
-        model={providerPrefs.model}
-        modelOptions={providerPrefs.modelOptions}
-        onProviderChange={(provider) => {
-          if (providerLocked) return
-          resetComposerFromProvider(provider)
-        }}
-        onModelChange={(_, model) => {
-          if (providerLocked) {
-            setLockedComposerState((current) => {
-              const next = current ?? createLockedComposerState(selectedProvider, composerState, providerDefaults)
-              return { ...next, model }
-            })
-            return
-          }
+      <div
+        className={cn(
+          "mt-2 overflow-x-auto py-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+          isStandalone && "pb-0"
+        )}
+      >
+        <div className="mx-auto flex min-w-max items-center justify-center px-3">
+          <ChatPreferenceControls
+            availableProviders={availableProviders}
+            selectedProvider={selectedProvider}
+            providerLocked={providerLocked}
+            model={providerPrefs.model}
+            modelOptions={providerPrefs.modelOptions}
+            onProviderChange={(provider) => {
+              if (providerLocked) return
+              resetComposerFromProvider(provider)
+            }}
+            onModelChange={(_, model) => {
+              if (providerLocked) {
+                setLockedComposerState((current) => {
+                  const next = current ?? createLockedComposerState(selectedProvider, composerState, providerDefaults)
+                  return { ...next, model }
+                })
+                setVisionModelPreference(model)
+                return
+              }
 
-          setComposerModel(model)
-        }}
-        onVisionContinualLearningChange={(continualLearning) => {
-          setVisionModelOptions({ continualLearning })
-        }}
-        planMode={providerPrefs.planMode}
-        onPlanModeChange={setEffectivePlanMode}
-        includePlanMode={showPlanMode}
-        className="flex justify-center items-center gap-0.5 max-w-[840px] mx-auto mt-2 animate-fade-in"
-      />
+              setVisionModelPreference(model)
+            }}
+            onVisionContinualLearningChange={(continualLearning) => {
+              setVisionModelOptions({ continualLearning })
+            }}
+            planMode={providerPrefs.planMode}
+            onPlanModeChange={setEffectivePlanMode}
+            includePlanMode={showPlanMode}
+            className="max-w-[840px] animate-fade-in"
+          />
+        </div>
+      </div>
     </div>
   )
 })

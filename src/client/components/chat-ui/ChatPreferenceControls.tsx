@@ -59,11 +59,13 @@ export function InputPopover({
   trigger,
   triggerClassName,
   disabled = false,
+  showDisabledState = true,
   children,
 }: {
   trigger: React.ReactNode
   triggerClassName?: string
   disabled?: boolean
+  showDisabledState?: boolean
   children: React.ReactNode | ((close: () => void) => React.ReactNode)
 }) {
   const [open, setOpen] = useState(false)
@@ -74,7 +76,8 @@ export function InputPopover({
         disabled
         className={cn(
           "flex items-center gap-1.5 rounded-md px-2 py-1 text-sm text-muted-foreground",
-          "[&>svg]:shrink-0 cursor-default",
+          showDisabledState && "opacity-70",
+          "[&>svg]:shrink-0 cursor-default [&>span]:whitespace-nowrap",
           triggerClassName
         )}
       >
@@ -89,7 +92,7 @@ export function InputPopover({
         <button
           className={cn(
             "flex items-center gap-1.5 rounded-md px-2 py-1 text-sm text-muted-foreground transition-colors",
-            "[&>svg]:shrink-0 hover:bg-muted/50",
+            "[&>svg]:shrink-0 [&>span]:whitespace-nowrap hover:bg-muted/50",
             triggerClassName
           )}
         >
@@ -140,10 +143,11 @@ export function ChatPreferenceControls({
   const showPlanMode = includePlanMode && providerConfig?.supportsPlanMode && onPlanModeChange
 
   return (
-    <div className={cn("flex items-center justify-center gap-0.5", className)}>
+    <div className={cn("flex items-center gap-0.5 md:justify-center", className)}>
       {showProviderPicker ? (
         <InputPopover
           disabled={providerLocked || !onProviderChange}
+          showDisabledState={!providerLocked}
           trigger={(
             <>
               <ProviderIcon className="h-3.5 w-3.5" />
@@ -228,7 +232,6 @@ export function ChatPreferenceControls({
           </>
         )}
       </InputPopover>
-
       {showPlanMode ? (
         <InputPopover
           trigger={(

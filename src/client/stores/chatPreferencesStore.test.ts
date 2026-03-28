@@ -24,6 +24,7 @@ describe("migrateChatPreferencesState", () => {
         modelOptions: { continualLearning: false },
         planMode: false,
       },
+      transcriptAutoScroll: false,
     })
 
     expect(migrated).toEqual({
@@ -41,11 +42,38 @@ describe("migrateChatPreferencesState", () => {
         modelOptions: { continualLearning: false },
         planMode: false,
       },
+      transcriptAutoScroll: false,
     })
+  })
+
+  test("defaults transcript auto-scroll to enabled for older snapshots", () => {
+    const migrated = migrateChatPreferencesState({
+      defaultProvider: "last_used",
+      providerDefaults: {
+        vision: {
+          model: "vispark/vision-medium",
+          modelOptions: { continualLearning: true },
+          planMode: false,
+        },
+      },
+      composerState: {
+        provider: "vision",
+        model: "vispark/vision-medium",
+        modelOptions: { continualLearning: true },
+        planMode: false,
+      },
+    })
+
+    expect(migrated.transcriptAutoScroll).toBe(true)
   })
 })
 
 describe("chat preference store", () => {
+  test("starts with continual learning turned off by default", () => {
+    expect(INITIAL_STATE.providerDefaults.vision.modelOptions).toEqual({ continualLearning: false })
+    expect(INITIAL_STATE.composerState.modelOptions).toEqual({ continualLearning: false })
+  })
+
   test("editing provider defaults does not change composer state", () => {
     useChatPreferencesStore.getState().setProviderDefaultModel("vision", "vispark/vision-large")
     useChatPreferencesStore.getState().setProviderDefaultModelOptions("vision", {
@@ -75,6 +103,30 @@ describe("chat preference store", () => {
       planMode: true,
     })
     expect(state.providerDefaults).toEqual(INITIAL_STATE.providerDefaults)
+  })
+
+  test("persisting continual learning preference updates defaults and composer state together", () => {
+    useChatPreferencesStore.getState().setVisionContinualLearningPreference(true)
+
+    expect(useChatPreferencesStore.getState().providerDefaults.vision.modelOptions).toEqual({
+      continualLearning: true,
+    })
+    expect(useChatPreferencesStore.getState().composerState.modelOptions).toEqual({
+      continualLearning: true,
+    })
+  })
+
+  test("persisting model preference updates defaults and composer state together", () => {
+    useChatPreferencesStore.getState().setVisionModelPreference("vispark/vision-large")
+
+    expect(useChatPreferencesStore.getState().providerDefaults.vision.model).toBe("vispark/vision-large")
+    expect(useChatPreferencesStore.getState().composerState.model).toBe("vispark/vision-large")
+  })
+
+  test("can update transcript auto-scroll independently", () => {
+    useChatPreferencesStore.getState().setTranscriptAutoScroll(false)
+
+    expect(useChatPreferencesStore.getState().transcriptAutoScroll).toBe(false)
   })
 
   test("resetComposerFromProvider copies provider defaults into composer state", () => {

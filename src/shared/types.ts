@@ -27,7 +27,7 @@ export type ModelOptions = Partial<{
 }>
 
 export const DEFAULT_VISION_MODEL_OPTIONS = {
-  continualLearning: true,
+  continualLearning: false,
 } as const satisfies VisionModelOptions
 
 export interface ProviderCatalogEntry {

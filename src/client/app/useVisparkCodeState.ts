@@ -51,8 +51,8 @@ function logVisparkCodeState(message: string, details?: unknown) {
   console.info(`[useVisparkCodeState] ${message}`, details)
 }
 
-export function shouldPinTranscriptToBottom(distanceFromBottom: number) {
-  return distanceFromBottom < 120
+export function shouldAutoFollowTranscript(distanceFromBottom: number) {
+  return distanceFromBottom < 24
 }
 
 export function getUiUpdateRestartReconnectAction(
@@ -215,9 +215,12 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
   const [startingLocalPath, setStartingLocalPath] = useState<string | null>(null)
   const [pendingChatId, setPendingChatId] = useState<string | null>(null)
   const editorLabel = getEditorPresetLabel(useTerminalPreferencesStore((store) => store.editorPreset))
+  const transcriptAutoScroll = useChatPreferencesStore((store) => store.transcriptAutoScroll)
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLDivElement>(null)
+  const initialScrollCompletedRef = useRef(false)
+  const initialScrollFrameRef = useRef<number | null>(null)
 
   useEffect(() => socket.onStatus(setConnectionStatus), [socket])
 
@@ -350,6 +353,23 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     }
   }, [chatSnapshot, pendingChatId])
 
+  useEffect(() => {
+    initialScrollCompletedRef.current = false
+    if (initialScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(initialScrollFrameRef.current)
+      initialScrollFrameRef.current = null
+    }
+    setIsAtBottom(true)
+  }, [activeChatId])
+
+  useEffect(() => {
+    return () => {
+      if (initialScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(initialScrollFrameRef.current)
+      }
+    }
+  }, [])
+
   useLayoutEffect(() => {
     const element = inputRef.current
     if (!element) return
@@ -397,26 +417,62 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     ?? fallbackLocalProjectPath
   )
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    if (initialScrollCompletedRef.current) return
+
     const element = scrollRef.current
     if (!element) return
-    const distance = element.scrollHeight - element.scrollTop - element.clientHeight
-    if (shouldPinTranscriptToBottom(distance)) {
-      element.scrollTo({ top: element.scrollHeight, behavior: "smooth" })
+    if (activeChatId && !runtime) return
+
+    if (!transcriptAutoScroll) {
+      const frameId = window.requestAnimationFrame(() => {
+        updateScrollState()
+      })
+      initialScrollCompletedRef.current = true
+      return () => window.cancelAnimationFrame(frameId)
     }
-  }, [activeChatId, inputHeight, messages.length, runtime?.status])
+
+    element.scrollTo({ top: element.scrollHeight, behavior: "auto" })
+    if (initialScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(initialScrollFrameRef.current)
+    }
+    initialScrollFrameRef.current = window.requestAnimationFrame(() => {
+      const currentElement = scrollRef.current
+      if (!currentElement) return
+      currentElement.scrollTo({ top: currentElement.scrollHeight, behavior: "auto" })
+      initialScrollFrameRef.current = null
+    })
+    initialScrollCompletedRef.current = true
+  }, [activeChatId, inputHeight, messages.length, runtime, transcriptAutoScroll])
+
+  useEffect(() => {
+    if (!transcriptAutoScroll || !initialScrollCompletedRef.current || !isAtBottom) return
+
+    const frameId = window.requestAnimationFrame(() => {
+      const element = scrollRef.current
+      if (!element || !isAtBottom) return
+      element.scrollTo({ top: element.scrollHeight, behavior: "auto" })
+    })
+
+    return () => window.cancelAnimationFrame(frameId)
+  }, [activeChatId, inputHeight, isAtBottom, messages.length, runtime?.status, transcriptAutoScroll])
 
   function updateScrollState() {
     const element = scrollRef.current
     if (!element) return
     const distance = element.scrollHeight - element.scrollTop - element.clientHeight
-    setIsAtBottom(distance < 24)
+    setIsAtBottom(shouldAutoFollowTranscript(distance))
+  }
+
+  function enableAutoFollow(behavior: ScrollBehavior) {
+    const element = scrollRef.current
+    setIsAtBottom(true)
+    if (!element) return
+    element.scrollTo({ top: element.scrollHeight, behavior })
   }
 
   function scrollToBottom() {
-    const element = scrollRef.current
-    if (!element) return
-    element.scrollTo({ top: element.scrollHeight, behavior: "smooth" })
+    enableAutoFollow("smooth")
   }
 
   async function createChatForProject(projectId: string) {
@@ -546,6 +602,8 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
       if (!activeChatId && !projectId) {
         throw new Error("Open a project first")
       }
+
+      enableAutoFollow("auto")
 
       const result = await socket.command<{ chatId?: string }>({
         type: "chat.send",

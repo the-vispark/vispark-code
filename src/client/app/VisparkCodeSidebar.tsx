@@ -117,10 +117,13 @@ export function VisparkCodeSidebar({
       chat={chat}
       activeChatId={activeChatId}
       nowMs={nowMs}
-      onSelectChat={(chatId) => navigate(`/chat/${chatId}`)}
+      onSelectChat={(chatId) => {
+        navigate(`/chat/${chatId}`)
+        onClose()
+      }}
       onDeleteChat={() => onDeleteChat(chat)}
     />
-  ), [activeChatId, navigate, nowMs, onDeleteChat])
+  ), [activeChatId, navigate, nowMs, onClose, onDeleteChat])
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -249,6 +252,7 @@ export function VisparkCodeSidebar({
                 navigate("/")
                 onClose()
               }}
+              className="size-10 rounded-lg"
               title="New project"
             >
               <Plus className="size-4" />
@@ -322,7 +326,7 @@ export function VisparkCodeSidebar({
           <button
             type="button"
             onClick={() => {
-              navigate("/settings/general")
+              navigate("/settings")
               onClose()
             }}
             className={cn(
