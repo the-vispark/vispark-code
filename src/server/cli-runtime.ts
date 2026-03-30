@@ -6,11 +6,18 @@ import { hasCommand, spawnDetached } from "./process-utils"
 import { APP_NAME, CLI_COMMAND, getDataDirDisplay, LOG_PREFIX, PACKAGE_NAME } from "../shared/branding"
 import { PROD_SERVER_PORT } from "../shared/ports"
 import { CLI_SUPPRESS_OPEN_ONCE_ENV_VAR } from "./restart"
+import {
+  logShareDetails,
+  renderTerminalQr,
+  startShareTunnel as startShareTunnelDefault,
+  type StartedShareTunnel,
+} from "./share"
 
 export interface CliOptions {
   port: number
   host: string
   openBrowser: boolean
+  share: boolean
   strictPort: boolean
 }
 
@@ -43,6 +50,8 @@ export interface CliRuntimeDeps {
   openUrl: (url: string) => void
   log: (message: string) => void
   warn: (message: string) => void
+  renderShareQr?: (url: string) => Promise<string>
+  startShareTunnel?: (localUrl: string) => Promise<StartedShareTunnel>
 }
 
 type ParsedArgs =
@@ -106,6 +115,7 @@ Options:
   --remote             Shortcut for --host 0.0.0.0
   --strict-port        Fail instead of trying another port
   --no-open            Don't open browser automatically
+  --share              Create a public share URL and print a terminal QR code
   --version            Print version and exit
   --help               Show this help message`)
 }
@@ -114,7 +124,10 @@ export function parseArgs(argv: string[]): ParsedArgs {
   let port = PROD_SERVER_PORT
   let host = "127.0.0.1"
   let openBrowser = true
+  let share = false
   let strictPort = false
+  let sawHost = false
+  let sawRemote = false
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -134,16 +147,26 @@ export function parseArgs(argv: string[]): ParsedArgs {
     if (arg === "--host") {
       const next = argv[index + 1]
       if (!next || next.startsWith("-")) throw new Error("Missing value for --host")
+      if (share) throw new Error("--share cannot be used with --host")
+      sawHost = true
       host = next
       index += 1
       continue
     }
     if (arg === "--remote") {
+      if (share) throw new Error("--share cannot be used with --remote")
+      sawRemote = true
       host = "0.0.0.0"
       continue
     }
     if (arg === "--no-open") {
       openBrowser = false
+      continue
+    }
+    if (arg === "--share") {
+      if (sawHost) throw new Error("--share cannot be used with --host")
+      if (sawRemote) throw new Error("--share cannot be used with --remote")
+      share = true
       continue
     }
     if (arg === "--strict-port") {
@@ -159,6 +182,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
       port,
       host,
       openBrowser,
+      share,
       strictPort,
     },
   }
@@ -259,18 +283,44 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
   const displayHost = bindHost === "127.0.0.1" || bindHost === "0.0.0.0" ? "localhost" : bindHost
   const url = `http://${bindHost}:${port}`
   const launchUrl = `http://${displayHost}:${port}`
+  let shareTunnel: StartedShareTunnel | null = null
 
   deps.log(`${LOG_PREFIX} listening on ${url}`)
   deps.log(`${LOG_PREFIX} data dir: ${getDataDirDisplay()}`)
 
+  if (parsedArgs.options.share) {
+    const localUrl = `http://localhost:${port}`
+
+    try {
+      const startShareTunnel = deps.startShareTunnel
+        ?? ((shareUrl: string) => startShareTunnelDefault(shareUrl, {
+          log: (message) => {
+            deps.log(`${LOG_PREFIX} ${message}`)
+          },
+        }))
+      shareTunnel = await startShareTunnel(localUrl)
+      await logShareDetails(deps.log, shareTunnel.publicUrl, localUrl, deps.renderShareQr ?? renderTerminalQr)
+    } catch (error) {
+      await stop()
+      deps.warn(`${LOG_PREFIX} failed to start Cloudflare share tunnel`)
+      if (error instanceof Error && error.message) {
+        deps.warn(`${LOG_PREFIX} ${error.message}`)
+      }
+      return { kind: "exited", code: 1 }
+    }
+  }
+
   const suppressOpenBrowser = process.env[CLI_SUPPRESS_OPEN_ONCE_ENV_VAR] === "1"
-  if (parsedArgs.options.openBrowser && !suppressOpenBrowser) {
+  if (parsedArgs.options.openBrowser && !parsedArgs.options.share && !suppressOpenBrowser) {
     deps.openUrl(launchUrl)
   }
 
   return {
     kind: "started",
-    stop,
+    stop: async () => {
+      shareTunnel?.stop()
+      await stop()
+    },
   }
 }
 

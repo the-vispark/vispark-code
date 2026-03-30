@@ -28,7 +28,10 @@ Or install the CLI globally:
 
 ```bash
 bun install -g vispark-code
-vispark-code
+vispark-code                # start with defaults (localhost only)
+vispark-code --port 4000    # custom port
+vispark-code --no-open      # don't open browser
+vispark-code --share        # create a public share URL + terminal QR
 ```
 
 Vispark Code opens at `http://localhost:3210`.
@@ -46,6 +49,28 @@ Vispark Code opens at `http://localhost:3210`.
 
 Vispark Code stores state in `~/.vispark-code/data/`.
 
+### Public share link
+
+Use `--share` to create a temporary public `trycloudflare.com` URL and print a terminal QR code:
+
+```bash
+vispark-code --share
+vispark-code --share --port 4000
+```
+
+`--share` is incompatible with `--host` and `--remote`. It does not open a browser automatically; instead it prints:
+
+```text
+QR Code:
+...
+
+Public URL:
+https://<random>.trycloudflare.com
+
+Local URL:
+http://localhost:3210
+```
+
 ## Development
 
 ```bash
@@ -53,6 +78,17 @@ bun run dev
 ```
 
 Useful commands:
+The same `--remote` and `--host` flags can be used with `bun run dev` for remote development.
+`--share` is also supported in dev mode and exposes the Vite client URL publicly:
+
+```bash
+bun run dev --share
+bun run dev --port 3333 --share
+```
+
+In dev, `--port` sets the Vite client port and the backend runs on `port + 1`, so `bun run dev --port 3333 --share` publishes `http://localhost:3333`.
+`--share` remains incompatible with `--host` and `--remote`.
+Use `bun run dev --port 4000` to run the Vite client on `4000` and the backend on `4001`.
 
 ```bash
 bun run check
