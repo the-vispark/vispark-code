@@ -355,8 +355,6 @@ export async function startVisparkCodeServer(options: StartVisparkCodeServerOpti
   }
 }
 
-export const startVisparkCodeServer = startVisparkCodeServer
-
 async function serveStatic(distDir: string, pathname: string) {
   const requestedPath = pathname === "/" ? "/index.html" : pathname
   const filePath = path.join(distDir, requestedPath)
