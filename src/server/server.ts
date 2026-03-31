@@ -1,4 +1,5 @@
 import path from "node:path"
+import type { ChatAttachment } from "../shared/types"
 import { APP_NAME, LOG_PREFIX } from "../shared/branding"
 import { DEV_CLIENT_PORT } from "../shared/ports"
 import { AppSettingsStore } from "./app-settings"
@@ -15,6 +16,70 @@ import { ensureVendoredHarness } from "./vendor-harness"
 import { VisionProxyServer } from "./vision-proxy"
 import { createWsRouter, type ClientState } from "./ws-router"
 import { clearSourceSyncData } from "./source-sync"
+import { deleteProjectUpload, inferAttachmentContentType, persistProjectUpload } from "./uploads"
+import { getProjectUploadDir } from "./paths"
+
+const MAX_UPLOAD_FILE_SIZE_BYTES = 25 * 1024 * 1024
+
+export async function persistUploadedFiles(args: {
+  projectId: string
+  localPath: string
+  files: File[]
+  persistUpload?: typeof persistProjectUpload
+}): Promise<ChatAttachment[]> {
+  const persistUpload = args.persistUpload ?? persistProjectUpload
+  const attachments: ChatAttachment[] = []
+
+  try {
+    for (const file of args.files) {
+      if (file.size > MAX_UPLOAD_FILE_SIZE_BYTES) {
+        const error = new Error(`File "${file.name}" exceeds the 25 MB limit.`)
+        ;(error as Error & { status?: number }).status = 413
+        throw error
+      }
+
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      const attachment = await persistUpload({
+        projectId: args.projectId,
+        localPath: args.localPath,
+        fileName: file.name,
+        bytes,
+        fallbackMimeType: file.type || undefined,
+      })
+      attachments.push(attachment)
+    }
+
+    return attachments
+  } catch (error) {
+    await Promise.all(attachments.map((attachment) => (
+      deleteProjectUpload({
+        localPath: args.localPath,
+        storedName: path.basename(attachment.absolutePath),
+      }).catch(() => false)
+    )))
+    throw error
+  }
+}
+
+function jsonResponse(body: unknown, init?: ResponseInit) {
+  return Response.json(body, init)
+}
+
+function extractStoredUploadName(pathname: string, prefix: string, suffix = "") {
+  if (!pathname.startsWith(prefix) || (suffix && !pathname.endsWith(suffix))) {
+    return null
+  }
+
+  const encoded = pathname.slice(prefix.length, suffix ? -suffix.length : undefined)
+  if (!encoded) return null
+
+  const storedName = decodeURIComponent(encoded)
+  if (!storedName || storedName.includes("/") || storedName.includes("\\") || storedName === "." || storedName === "..") {
+    return null
+  }
+
+  return storedName
+}
 
 export interface StartVisparkCodeServerOptions {
   port?: number
@@ -120,6 +185,126 @@ export async function startVisparkCodeServer(options: StartVisparkCodeServerOpti
             return Response.json({ ok: true, port: actualPort })
           }
 
+          const uploadBatchMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/uploads$/)
+          if (uploadBatchMatch) {
+            const project = store.getProject(uploadBatchMatch[1] ?? "")
+            if (!project) {
+              return jsonResponse({ error: "Project not found." }, { status: 404 })
+            }
+
+            if (req.method !== "POST") {
+              return new Response(null, {
+                status: 405,
+                headers: {
+                  Allow: "POST",
+                },
+              })
+            }
+
+            return (async () => {
+              try {
+                const formData = await req.formData()
+                const files = formData
+                  .getAll("files")
+                  .filter((value): value is File => value instanceof File)
+
+                if (files.length === 0) {
+                  return jsonResponse({ error: "Attach at least one file." }, { status: 400 })
+                }
+
+                const attachments = await persistUploadedFiles({
+                  projectId: project.id,
+                  localPath: project.localPath,
+                  files,
+                })
+
+                return jsonResponse({ attachments })
+              } catch (error) {
+                const status = error instanceof Error && "status" in error && typeof (error as { status?: unknown }).status === "number"
+                  ? (error as { status: number }).status
+                  : 500
+                const message = error instanceof Error ? error.message : "Upload failed."
+                return jsonResponse({ error: message }, { status })
+              }
+            })()
+          }
+
+          const uploadContentMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/uploads\/(.+)\/content$/)
+          if (uploadContentMatch) {
+            const project = store.getProject(uploadContentMatch[1] ?? "")
+            if (!project) {
+              return jsonResponse({ error: "Project not found." }, { status: 404 })
+            }
+
+            if (req.method !== "GET") {
+              return new Response(null, {
+                status: 405,
+                headers: {
+                  Allow: "GET",
+                },
+              })
+            }
+
+            const storedName = extractStoredUploadName(
+              url.pathname,
+              `/api/projects/${project.id}/uploads/`,
+              "/content"
+            )
+            if (!storedName) {
+              return jsonResponse({ error: "Attachment not found." }, { status: 404 })
+            }
+
+            const file = Bun.file(path.join(getProjectUploadDir(project.localPath), storedName))
+            return (async () => {
+              if (!(await file.exists())) {
+                return jsonResponse({ error: "Attachment not found." }, { status: 404 })
+              }
+
+              return new Response(file, {
+                headers: {
+                  "Content-Type": inferAttachmentContentType(storedName, file.type || undefined),
+                },
+              })
+            })()
+          }
+
+          const uploadDeleteMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/uploads\/(.+)$/)
+          if (uploadDeleteMatch) {
+            const project = store.getProject(uploadDeleteMatch[1] ?? "")
+            if (!project) {
+              return jsonResponse({ error: "Project not found." }, { status: 404 })
+            }
+
+            if (req.method !== "DELETE") {
+              return new Response(null, {
+                status: 405,
+                headers: {
+                  Allow: "DELETE",
+                },
+              })
+            }
+
+            const storedName = extractStoredUploadName(
+              url.pathname,
+              `/api/projects/${project.id}/uploads/`
+            )
+            if (!storedName) {
+              return jsonResponse({ error: "Attachment not found." }, { status: 404 })
+            }
+
+            return (async () => {
+              const deleted = await deleteProjectUpload({
+                localPath: project.localPath,
+                storedName,
+              })
+              if (!deleted) {
+                return jsonResponse({ error: "Attachment not found." }, { status: 404 })
+              }
+
+              return jsonResponse({ ok: true })
+            })()
+          }
+
           if (devClientOrigin) {
             return Response.redirect(`${devClientOrigin}${url.pathname}${url.search}`, 307)
           }
@@ -169,6 +354,8 @@ export async function startVisparkCodeServer(options: StartVisparkCodeServerOpti
     stop: shutdown,
   }
 }
+
+export const startVisparkCodeServer = startVisparkCodeServer
 
 async function serveStatic(distDir: string, pathname: string) {
   const requestedPath = pathname === "/" ? "/index.html" : pathname

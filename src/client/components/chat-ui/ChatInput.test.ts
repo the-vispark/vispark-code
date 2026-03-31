@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { resolvePlanModeState } from "./ChatInput"
+import { resolvePlanModeState, willExceedAttachmentLimit } from "./ChatInput"
 import { useChatPreferencesStore } from "../../stores/chatPreferencesStore"
 
 const INITIAL_STATE = useChatPreferencesStore.getInitialState()
@@ -83,5 +83,23 @@ describe("resolvePlanModeState", () => {
       modelOptions: { continualLearning: true },
       planMode: false,
     })
+  })
+})
+
+describe("willExceedAttachmentLimit", () => {
+  test("rejects a batch that would push the composer above the total attachment limit", () => {
+    expect(willExceedAttachmentLimit({
+      currentAttachmentCount: 7,
+      queuedAttachmentCount: 1,
+      incomingAttachmentCount: 3,
+    })).toBe(true)
+  })
+
+  test("allows a batch that exactly reaches the total attachment limit", () => {
+    expect(willExceedAttachmentLimit({
+      currentAttachmentCount: 7,
+      queuedAttachmentCount: 1,
+      incomingAttachmentCount: 2,
+    })).toBe(false)
   })
 })

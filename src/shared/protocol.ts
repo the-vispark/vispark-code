@@ -1,6 +1,7 @@
 import type {
   AgentProvider,
   AppSettingsSnapshot,
+  ChatAttachment,
   ChatSnapshot,
   FileTreeDirectoryPage,
   FileTreeSnapshot,
@@ -82,6 +83,7 @@ export type ClientCommand =
       projectId?: string
       provider?: AgentProvider
       content: string
+      attachments?: ChatAttachment[]
       model?: string
       modelOptions?: ModelOptions
       effort?: string

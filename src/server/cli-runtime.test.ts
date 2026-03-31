@@ -4,6 +4,7 @@ import { compareVersions, getInstallTarget, parseArgs, runCli } from "./cli-runt
 
 afterEach(() => {
   delete process.env[CLI_SUPPRESS_OPEN_ONCE_ENV_VAR]
+  delete process.env.VISPARK_PUBLIC_APP_URL
 })
 
 function createDeps(overrides: Partial<Parameters<typeof runCli>[1]> = {}) {
@@ -261,12 +262,14 @@ describe("runCli", () => {
     expect(calls.log).toContain("https://vispark.trycloudflare.com")
     expect(calls.log).toContain("Local URL:")
     expect(calls.log).toContain("http://localhost:4000")
+    expect(process.env.VISPARK_PUBLIC_APP_URL).toBe("https://vispark.trycloudflare.com")
 
     if (result.kind !== "started") {
       throw new Error(`expected started result, got ${result.kind}`)
     }
     await result.stop()
     expect(calls.shareTunnelStops).toBe(1)
+    expect(process.env.VISPARK_PUBLIC_APP_URL).toBeUndefined()
   })
 
   test("uses the actual bound port for --share", async () => {

@@ -1,9 +1,10 @@
 import type {
   AgentProvider,
-  VisparkCodeStatus,
+  ChatAttachment,
   NormalizedToolCall,
   PendingToolSnapshot,
   TranscriptEntry,
+  VisparkCodeStatus,
 } from "../shared/types"
 import type { ClientCommand } from "../shared/protocol"
 import { normalizeToolCall } from "../shared/tools"
@@ -81,6 +82,41 @@ function stringFromUnknown(value: unknown) {
   } catch {
     return String(value)
   }
+}
+
+function escapeXmlAttribute(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+}
+
+export function buildAttachmentHintText(attachments: ChatAttachment[]) {
+  if (attachments.length === 0) return ""
+
+  const lines = attachments.map((attachment) => (
+    `<attachment kind="${escapeXmlAttribute(attachment.kind)}" mime_type="${escapeXmlAttribute(attachment.mimeType)}" path="${escapeXmlAttribute(attachment.absolutePath)}" project_path="${escapeXmlAttribute(attachment.relativePath)}" content_url="${escapeXmlAttribute(attachment.contentUrl)}" size_bytes="${attachment.size}" display_name="${escapeXmlAttribute(attachment.displayName)}" />`
+  ))
+
+  return [
+    "<vispark-code-attachments>",
+    ...lines,
+    "</vispark-code-attachments>",
+  ].join("\n")
+}
+
+export function buildPromptText(content: string, attachments: ChatAttachment[]) {
+  const attachmentHint = buildAttachmentHintText(attachments)
+  if (!attachmentHint) {
+    return content.trim()
+  }
+
+  const trimmed = content.trim()
+  return [
+    trimmed || "Please inspect the attached files.",
+    attachmentHint,
+  ].join("\n\n").trim()
 }
 
 function discardedToolResult(
@@ -309,8 +345,6 @@ async function startVisionTurn(args: {
       settingSources: ["project", "local"],
       env: { ...process.env },
       stderr: (data: string) => {
-        // Log stderr to console for debugging, but we rely on the structured result error
-        // for the UI message.
         console.error(`[Harness Stderr] ${data}`)
       },
     },
@@ -337,9 +371,6 @@ async function startVisionTurn(args: {
 
 function formatErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error)
-
-  // Try to extract JSON if it looks like an API error with a JSON body
-  // Example: "API Error: 400 {"error":{"type":"authentication_error","message":"Failed to verify key"}}"
   const jsonMatch = message.match(/API Error: \d+ (\{.*\})/i)
   if (jsonMatch?.[1]) {
     try {
@@ -348,11 +379,10 @@ function formatErrorMessage(error: unknown): string {
         return parsed.error.message
       }
     } catch {
-      // Ignore parsing errors
+      // Ignore parsing errors.
     }
   }
 
-  // Handle generic Vision API Error prefix if it still exists
   return message.replace(/^Vision API Error: /i, "").replace(/^Vision API \d+: /i, "")
 }
 
@@ -402,6 +432,7 @@ export class AgentCoordinator {
     chatId: string
     provider: AgentProvider
     content: string
+    attachments: ChatAttachment[]
     model: string
     planMode: boolean
     continualLearning: boolean
@@ -421,7 +452,10 @@ export class AgentCoordinator {
     const shouldGenerateTitle = args.appendUserPrompt && chat.title === "New Chat" && existingMessages.length === 0
 
     if (args.appendUserPrompt) {
-      await this.store.appendMessage(args.chatId, timestamped({ kind: "user_prompt", content: args.content }, Date.now()))
+      await this.store.appendMessage(
+        args.chatId,
+        timestamped({ kind: "user_prompt", content: args.content, attachments: args.attachments }, Date.now())
+      )
     }
     await this.store.recordTurnStarted(args.chatId)
 
@@ -453,7 +487,7 @@ export class AgentCoordinator {
     }
 
     const turn = await startVisionTurn({
-      content: args.content,
+      content: buildPromptText(args.content, args.attachments),
       localPath: project.localPath,
       model: args.model,
       planMode: args.planMode,
@@ -507,6 +541,7 @@ export class AgentCoordinator {
       chatId,
       provider: settings.provider,
       content: command.content,
+      attachments: command.attachments ?? [],
       model: settings.model,
       planMode: settings.planMode,
       continualLearning: settings.continualLearning,
@@ -577,16 +612,16 @@ export class AgentCoordinator {
             })
           )
           await this.store.recordTurnFailed(active.chatId, message)
-        } catch (e) {
-          // Ignore failures while saving the error
+        } catch {
+          // Ignore failures while saving the error.
         }
       }
     } finally {
       if (active.cancelRequested && !active.cancelRecorded && this.store.getChat(active.chatId)) {
         try {
           await this.store.recordTurnCancelled(active.chatId)
-        } catch (e) {
-          // Ignore if chat is concurrently deleted
+        } catch {
+          // Ignore if chat is concurrently deleted.
         }
       }
       active.turn.close()
@@ -616,7 +651,9 @@ export class AgentCoordinator {
               content: result,
             })
           )
-        } catch (e) {}
+        } catch {
+          // Ignore if chat is concurrently deleted.
+        }
       }
     }
 
@@ -624,7 +661,9 @@ export class AgentCoordinator {
       try {
         await this.store.appendMessage(chatId, timestamped({ kind: "interrupted" }))
         await this.store.recordTurnCancelled(chatId)
-      } catch (e) {}
+      } catch {
+        // Ignore if chat is concurrently deleted.
+      }
     }
     active.cancelRecorded = true
     active.hasFinalResult = true

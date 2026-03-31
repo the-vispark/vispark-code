@@ -285,6 +285,8 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
   const launchUrl = `http://${displayHost}:${port}`
   let shareTunnel: StartedShareTunnel | null = null
 
+  delete process.env.VISPARK_PUBLIC_APP_URL
+
   deps.log(`${LOG_PREFIX} listening on ${url}`)
   deps.log(`${LOG_PREFIX} data dir: ${getDataDirDisplay()}`)
 
@@ -299,6 +301,7 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
           },
         }))
       shareTunnel = await startShareTunnel(localUrl)
+      process.env.VISPARK_PUBLIC_APP_URL = shareTunnel.publicUrl
       await logShareDetails(deps.log, shareTunnel.publicUrl, localUrl, deps.renderShareQr ?? renderTerminalQr)
     } catch (error) {
       await stop()
@@ -318,6 +321,7 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
   return {
     kind: "started",
     stop: async () => {
+      delete process.env.VISPARK_PUBLIC_APP_URL
       shareTunnel?.stop()
       await stop()
     },

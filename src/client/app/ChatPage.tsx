@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react"
-import { ArrowDown } from "lucide-react"
+import { ArrowDown, Upload } from "lucide-react"
 import { useOutletContext } from "react-router-dom"
 import type { KeybindingsSnapshot } from "../../shared/types"
-import { ChatInput } from "../components/chat-ui/ChatInput"
+import { ChatInput, type ChatInputHandle } from "../components/chat-ui/ChatInput"
 import { ChatNavbar } from "../components/chat-ui/ChatNavbar"
 import { RightSidebar } from "../components/chat-ui/RightSidebar"
 import { TerminalWorkspace } from "../components/chat-ui/TerminalWorkspace"
@@ -49,14 +49,21 @@ export function resolveChatPageKeybindingAction(
   return null
 }
 
+export function hasFileDragTypes(types: Iterable<string>) {
+  return Array.from(types).includes("Files")
+}
+
 export function ChatPage() {
   const state = useOutletContext<VisparkCodeState>()
   const layoutRootRef = useRef<HTMLDivElement>(null)
   const chatCardRef = useRef<HTMLDivElement>(null)
-  const chatInputRef = useRef<HTMLTextAreaElement>(null)
+  const chatInputElementRef = useRef<HTMLTextAreaElement>(null)
+  const chatInputRef = useRef<ChatInputHandle | null>(null)
   const [typedEmptyStateText, setTypedEmptyStateText] = useState("")
   const [isEmptyStateTypingComplete, setIsEmptyStateTypingComplete] = useState(false)
   const [fixedTerminalHeight, setFixedTerminalHeight] = useState(0)
+  const [isPageFileDragActive, setIsPageFileDragActive] = useState(false)
+  const pageFileDragDepthRef = useRef(0)
   const projectId = state.runtime?.projectId ?? null
   const projectTerminalLayout = useTerminalLayoutStore((store) => (projectId ? store.projects[projectId] : undefined))
   const terminalLayout = projectTerminalLayout ?? DEFAULT_PROJECT_TERMINAL_LAYOUT
@@ -89,7 +96,7 @@ export function ChatPage() {
     shouldRenderTerminalLayout,
     projectId,
     terminalLayout,
-    chatInputRef,
+    chatInputRef: chatInputElementRef,
   })
   const {
     isAnimating: isRightSidebarAnimating,
@@ -105,10 +112,21 @@ export function ChatPage() {
 
   useStickyChatFocus({
     rootRef: chatCardRef,
-    fallbackRef: chatInputRef,
+    fallbackRef: chatInputElementRef,
     enabled: state.hasSelectedProject && state.runtime?.status !== "waiting_for_user",
     canCancel: state.canCancel,
   })
+
+  function hasDraggedFiles(event: React.DragEvent) {
+    return hasFileDragTypes(event.dataTransfer?.types ?? [])
+  }
+
+  function enqueueDroppedFiles(files: File[]) {
+    if (!state.hasSelectedProject || files.length === 0) {
+      return
+    }
+    chatInputRef.current?.enqueueFiles(files)
+  }
 
   const handleToggleEmbeddedTerminal = useCallback(() => {
     if (!projectId) return
@@ -256,7 +274,39 @@ export function ChatPage() {
   }
 
   const chatCard = (
-    <Card ref={chatCardRef} className="bg-background h-full flex flex-col overflow-hidden border-0 rounded-none relative">
+    <Card
+      ref={chatCardRef}
+      className="bg-background h-full flex flex-col overflow-hidden border-0 rounded-none relative"
+      onDragEnter={(event) => {
+        if (!hasDraggedFiles(event) || !state.hasSelectedProject) return
+        event.preventDefault()
+        pageFileDragDepthRef.current += 1
+        setIsPageFileDragActive(true)
+      }}
+      onDragOver={(event) => {
+        if (!hasDraggedFiles(event) || !state.hasSelectedProject) return
+        event.preventDefault()
+        event.dataTransfer.dropEffect = "copy"
+        if (!isPageFileDragActive) {
+          setIsPageFileDragActive(true)
+        }
+      }}
+      onDragLeave={(event) => {
+        if (!hasDraggedFiles(event) || !state.hasSelectedProject) return
+        event.preventDefault()
+        pageFileDragDepthRef.current = Math.max(0, pageFileDragDepthRef.current - 1)
+        if (pageFileDragDepthRef.current === 0) {
+          setIsPageFileDragActive(false)
+        }
+      }}
+      onDrop={(event) => {
+        if (!hasDraggedFiles(event) || !state.hasSelectedProject) return
+        event.preventDefault()
+        pageFileDragDepthRef.current = 0
+        setIsPageFileDragActive(false)
+        enqueueDroppedFiles([...event.dataTransfer.files])
+      }}
+    >
       <CardContent className="flex flex-1 min-h-0 flex-col p-0 overflow-hidden relative">
         <ChatNavbar
           sidebarCollapsed={state.sidebarCollapsed}
@@ -346,6 +396,20 @@ export function ChatPage() {
           </div>
         ) : null}
 
+        {isPageFileDragActive ? (
+          <div className="absolute inset-0 z-30 pointer-events-none">
+            <div className="absolute inset-0 backdrop-blur-sm" />
+            <div className="absolute inset-6">
+              <div className="flex h-full items-center justify-center">
+                <div className="text-center flex flex-col items-center justify-center gap-3">
+                  <Upload className="mx-auto size-14 text-foreground" strokeWidth={1.75} />
+                  <div className="text-xl font-medium text-foreground">Drop up to 10 files</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
         <div
           style={{ bottom: SCROLL_BUTTON_BOTTOM_PX }}
           className={cn(
@@ -368,6 +432,7 @@ export function ChatPage() {
         <div className="bg-gradient-to-t from-background via-background pointer-events-auto" ref={state.inputRef}>
           <ChatInput
             ref={chatInputRef}
+            inputElementRef={chatInputElementRef}
             key={state.activeChatId ?? "new-chat"}
             onSubmit={state.handleSend}
             onCancel={() => {
@@ -381,6 +446,7 @@ export function ChatPage() {
             }
             canCancel={state.canCancel}
             chatId={state.activeChatId}
+            projectId={projectId}
             activeProvider={state.runtime?.provider ?? null}
             availableProviders={state.availableProviders}
             missingVisionApiKey={state.settingsReady && !state.hasVisionApiKey}
@@ -576,7 +642,6 @@ export function ChatPage() {
       ) : (
         chatCard
       )}
-
     </div>
   )
 }

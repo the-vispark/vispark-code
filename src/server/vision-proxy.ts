@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto"
+import { spawn } from "node:child_process"
+import { mkdtemp, readFile, rm } from "node:fs/promises"
 import http, { type IncomingMessage, type ServerResponse } from "node:http"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import type { AppSettingsStore } from "./app-settings"
 
 const DEFAULT_VISION_ENDPOINT = "https://api.lab.vispark.in/model/text/vision"
@@ -12,6 +16,16 @@ const CONTINUAL_LEARNING_SYSTEM_GUIDANCE = [
   "Do not learn if the topic is only current project related, you have to learn general preferences and habits about the user.",
   "Apply what you learn quietly and consistently unless the user explicitly asks about the learning behavior.",
 ].join("\n\n")
+const ATTACHMENT_BLOCK_START = "<vispark-code-attachments>"
+const ATTACHMENT_BLOCK_END = "</vispark-code-attachments>"
+const TEXT_ATTACHMENT_CHAR_LIMIT = 120_000
+const PDF_PREVIEW_PAGE_LIMIT = 5
+const AUDIO_TRANSCODE_SECONDS = 60
+
+type VisionContentItem = {
+  type: "text" | "image" | "audio" | "video"
+  content: string
+}
 
 type VisparkLabTextBlock = {
   type: "text";
@@ -89,8 +103,19 @@ type VisionResponse = {
 type FlattenedVisionPrompt = {
   systemMessage: string
   prompt: string
+  attachments: InlineAttachmentRecord[]
   continualLearningEnabled: boolean
   continualLearning: boolean
+}
+
+export type InlineAttachmentRecord = {
+  kind: "image" | "file"
+  mimeType: string
+  path: string
+  projectPath: string
+  contentUrl: string
+  sizeBytes: number
+  displayName: string
 }
 
 function stringifyContent(value: unknown) {
@@ -100,6 +125,334 @@ function stringifyContent(value: unknown) {
   } catch {
     return String(value)
   }
+}
+
+function unescapeXmlAttribute(value: string) {
+  return value
+    .replaceAll("&quot;", "\"")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&")
+}
+
+function truncateText(value: string, maxChars = TEXT_ATTACHMENT_CHAR_LIMIT) {
+  if (value.length <= maxChars) return value
+  return `${value.slice(0, maxChars)}\n\n[truncated]`
+}
+
+function normalizeTextAttachmentMimeType(mimeType: string) {
+  return mimeType.split(";")[0]?.trim().toLowerCase() || mimeType.toLowerCase()
+}
+
+function isTextLikeAttachment(mimeType: string, filePath: string) {
+  const normalizedMimeType = normalizeTextAttachmentMimeType(mimeType)
+  if (
+    normalizedMimeType.startsWith("text/")
+    || normalizedMimeType === "application/json"
+    || normalizedMimeType === "application/xml"
+  ) {
+    return true
+  }
+
+  return /\.(c|cc|cfg|conf|cpp|cs|css|env|go|graphql|h|hpp|html|ini|java|js|json|jsonc|jsx|kt|lua|md|mjs|php|pl|properties|py|rb|rs|scss|sh|sql|swift|toml|ts|tsx|txt|tsv|vue|xml|yaml|yml|zsh)$/i.test(filePath)
+}
+
+function quoteForPrompt(value: string) {
+  return value.replace(/```/g, "'''")
+}
+
+function dataUrlForBytes(bytes: Uint8Array, mimeType: string) {
+  return `data:${mimeType};base64,${Buffer.from(bytes).toString("base64")}`
+}
+
+function getPublicAttachmentUrl(contentUrl: string) {
+  const baseUrl = process.env.VISPARK_PUBLIC_APP_URL?.trim()
+  if (!baseUrl || !contentUrl.trim()) {
+    return null
+  }
+
+  try {
+    return new URL(contentUrl, baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`).toString()
+  } catch {
+    return null
+  }
+}
+
+async function readFileAsDataUrl(filePath: string, mimeType: string) {
+  const bytes = await readFile(filePath)
+  return dataUrlForBytes(bytes, mimeType)
+}
+
+async function readFileAsBase64(filePath: string) {
+  const bytes = await readFile(filePath)
+  return Buffer.from(bytes).toString("base64")
+}
+
+function parseAttachmentTagAttributes(line: string) {
+  const attributes: Record<string, string> = {}
+  for (const match of line.matchAll(/([a-z_]+)="([^"]*)"/g)) {
+    attributes[match[1]] = unescapeXmlAttribute(match[2] ?? "")
+  }
+  return attributes
+}
+
+export function extractInlineAttachmentsFromText(text: string): {
+  cleanText: string
+  attachments: InlineAttachmentRecord[]
+} {
+  const attachments: InlineAttachmentRecord[] = []
+  const cleanText = text.replace(
+    new RegExp(`${ATTACHMENT_BLOCK_START}[\\s\\S]*?${ATTACHMENT_BLOCK_END}`, "g"),
+    (block) => {
+      for (const line of block.split("\n")) {
+        const trimmed = line.trim()
+        if (!trimmed.startsWith("<attachment ")) continue
+        const attributes = parseAttachmentTagAttributes(trimmed)
+        const path = attributes.path
+        const mimeType = attributes.mime_type
+        if (!path || !mimeType) continue
+
+        attachments.push({
+          kind: attributes.kind === "image" ? "image" : "file",
+          mimeType,
+          path,
+          projectPath: attributes.project_path ?? "",
+          contentUrl: attributes.content_url ?? "",
+          sizeBytes: Number.parseInt(attributes.size_bytes ?? "0", 10) || 0,
+          displayName: attributes.display_name ?? path.split("/").pop() ?? "attachment",
+        })
+      }
+
+      return ""
+    }
+  ).trim()
+
+  return {
+    cleanText,
+    attachments,
+  }
+}
+
+async function runCommand(command: string, args: string[]) {
+  return await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+    const child = spawn(command, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    let stdout = ""
+    let stderr = ""
+
+    child.stdout?.setEncoding("utf8")
+    child.stdout?.on("data", (chunk) => {
+      stdout += chunk
+    })
+
+    child.stderr?.setEncoding("utf8")
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk
+    })
+
+    child.on("error", reject)
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve({ stdout, stderr })
+        return
+      }
+
+      reject(new Error(stderr.trim() || `${command} exited with code ${String(code)}`))
+    })
+  })
+}
+
+async function preparePdfContentItems(attachment: InlineAttachmentRecord): Promise<VisionContentItem[]> {
+  const items: VisionContentItem[] = []
+  const tempDir = await mkdtemp(path.join(tmpdir(), "vispark-pdf-"))
+
+  try {
+    const prefix = path.join(tempDir, "page")
+    await runCommand("pdftoppm", [
+      "-png",
+      "-f",
+      "1",
+      "-l",
+      String(PDF_PREVIEW_PAGE_LIMIT),
+      "-r",
+      "144",
+      attachment.path,
+      prefix,
+    ])
+
+    const pagePaths = Array.from({ length: PDF_PREVIEW_PAGE_LIMIT }, (_, index) => `${prefix}-${index + 1}.png`)
+    for (const pagePath of pagePaths) {
+      const file = Bun.file(pagePath)
+      if (!(await file.exists())) continue
+      items.push({
+        type: "image",
+        content: await readFileAsDataUrl(pagePath, "image/png"),
+      })
+    }
+
+    try {
+      const { stdout } = await runCommand("pdftotext", [
+        "-f",
+        "1",
+        "-l",
+        String(PDF_PREVIEW_PAGE_LIMIT),
+        "-layout",
+        attachment.path,
+        "-",
+      ])
+      const text = truncateText(stdout.trim())
+      if (text) {
+        items.unshift({
+          type: "text",
+          content: `PDF attachment: ${attachment.displayName}\n\n${text}`,
+        })
+      }
+    } catch {
+      // Rendering the pages is enough to preserve multimodal understanding.
+    }
+  } finally {
+    await rm(tempDir, { recursive: true, force: true })
+  }
+
+  if (items.length === 0) {
+    items.push({
+      type: "text",
+      content: `Attached PDF: ${attachment.displayName}\nPath: ${attachment.projectPath || attachment.path}`,
+    })
+  }
+
+  return items
+}
+
+async function prepareAudioContentItems(attachment: InlineAttachmentRecord): Promise<VisionContentItem[]> {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "vispark-audio-"))
+
+  try {
+    const mp3Path = path.join(tempDir, "attachment.mp3")
+    await runCommand("ffmpeg", [
+      "-y",
+      "-i",
+      attachment.path,
+      "-vn",
+      "-ac",
+      "1",
+      "-ar",
+      "16000",
+      "-t",
+      String(AUDIO_TRANSCODE_SECONDS),
+      "-codec:a",
+      "libmp3lame",
+      "-q:a",
+      "4",
+      mp3Path,
+    ])
+
+    return [{
+      type: "audio",
+      content: await readFileAsDataUrl(mp3Path, "audio/mpeg"),
+    }]
+  } finally {
+    await rm(tempDir, { recursive: true, force: true })
+  }
+}
+
+async function prepareNativeVideoContentItems(attachment: InlineAttachmentRecord): Promise<VisionContentItem[]> {
+  const publicUrl = getPublicAttachmentUrl(attachment.contentUrl)
+  if (publicUrl) {
+    return [{
+      type: "video",
+      content: publicUrl,
+    }]
+  }
+
+  return [{
+    type: "video",
+    content: await readFileAsBase64(attachment.path),
+  }]
+}
+
+async function prepareAttachmentContentItems(
+  attachment: InlineAttachmentRecord
+): Promise<VisionContentItem[]> {
+  try {
+    if (attachment.mimeType.startsWith("image/")) {
+      return [{
+        type: "image",
+        content: await readFileAsDataUrl(attachment.path, attachment.mimeType),
+      }]
+    }
+
+    if (attachment.mimeType === "application/pdf") {
+      return await preparePdfContentItems(attachment)
+    }
+
+    if (attachment.mimeType.startsWith("audio/")) {
+      return await prepareAudioContentItems(attachment)
+    }
+
+    if (attachment.mimeType.startsWith("video/")) {
+      return await prepareNativeVideoContentItems(attachment)
+    }
+
+    if (isTextLikeAttachment(attachment.mimeType, attachment.path)) {
+      const text = truncateText(await readFile(attachment.path, "utf8"))
+      return [{
+        type: "text",
+        content: `Attachment: ${attachment.displayName}\nPath: ${attachment.projectPath || attachment.path}\n\n\`\`\`\n${quoteForPrompt(text)}\n\`\`\``,
+      }]
+    }
+  } catch (error) {
+    return [{
+      type: "text",
+      content: `Attachment "${attachment.displayName}" could not be converted to a Vision content item. Path: ${attachment.projectPath || attachment.path}. Error: ${error instanceof Error ? error.message : String(error)}`,
+    }]
+  }
+
+  return [{
+    type: "text",
+    content: `Binary attachment: ${attachment.displayName}\nMime type: ${attachment.mimeType}\nPath: ${attachment.projectPath || attachment.path}`,
+  }]
+}
+
+export async function buildVisionContent(
+  prompt: string,
+  attachments: InlineAttachmentRecord[]
+): Promise<VisionContentItem[]> {
+  const content: VisionContentItem[] = [{
+    type: "text",
+    content: prompt || "USER:\n",
+  }]
+  const seen = new Set<string>()
+
+  for (const attachment of attachments) {
+    const key = `${attachment.path}::${attachment.contentUrl}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    content.push(...(await prepareAttachmentContentItems(attachment)))
+  }
+
+  return content
+}
+
+export function extractVisionVideoFailureMessage(payload: VisionResponse) {
+  if (payload.data?.type !== "text") {
+    return null
+  }
+
+  const text = payload.data.content.toLowerCase()
+  const fragments = [
+    "incorrect padding",
+    "padding error",
+    "video processing error",
+    "video didn't load properly",
+    "can't see the video",
+    "didn't upload or encode correctly",
+  ]
+
+  return fragments.some((fragment) => text.includes(fragment))
+    ? payload.data.content
+    : null
 }
 
 function compactToolDefinition(tool: VisparkLabToolDefinition): VisionToolDefinition {
@@ -439,6 +792,7 @@ function isInitialUserMessageRequest(messages: VisparkLabMessage[] | undefined) 
 
 function flattenVisionPrompt(request: VisparkLabMessagesRequest): FlattenedVisionPrompt {
   let continualLearningEnabled = false
+  const attachments: InlineAttachmentRecord[] = []
   const systemText = (request.system ?? [])
     .map((block) => {
       if (!block.text.includes(CONTINUAL_LEARNING_MARKER)) {
@@ -459,19 +813,30 @@ function flattenVisionPrompt(request: VisparkLabMessagesRequest): FlattenedVisio
       const role = message.role === "assistant" ? "assistant" : "user"
       return message.content.map((block) => {
         if (block.type === "text") {
-          return `${role.toUpperCase()}:\n${block.text}`
+          const extracted = role === "user"
+            ? extractInlineAttachmentsFromText(block.text)
+            : { cleanText: block.text.trim(), attachments: [] as InlineAttachmentRecord[] }
+
+          attachments.push(...extracted.attachments)
+          if (!extracted.cleanText) {
+            return null
+          }
+
+          return `${role.toUpperCase()}:\n${extracted.cleanText}`
         }
         if (block.type === "tool_use") {
           return `ASSISTANT TOOL CALL ${block.name} (${block.id}):\n${JSON.stringify(block.input, null, 2)}`
         }
         return `TOOL RESULT ${block.tool_use_id}${block.is_error ? " [error]" : ""}:\n${stringifyContent(block.content)}`
       })
+        .filter((value): value is string => typeof value === "string" && value.length > 0)
     })
     .join("\n\n")
 
   return {
     systemMessage: effectiveSystemMessage || "You are the coding assistant backend for Vispark Code.",
     prompt: transcript || "USER:\n",
+    attachments,
     continualLearningEnabled,
     continualLearning,
   }
@@ -626,82 +991,93 @@ async function callVision(
   currentWeights: string
 ) {
   const { modelId, size } = mapVisionModel(request.model)
+  const hasVideoAttachments = prompt.attachments.some((attachment) => attachment.mimeType.startsWith("video/"))
 
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), 30000)
+  const sendVisionRequest = async (content: VisionContentItem[]) => {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 30000)
 
-  try {
-    const visionResponse = await fetch(DEFAULT_VISION_ENDPOINT, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-API-Key": apiKey,
-      },
-      signal: controller.signal,
-      body: JSON.stringify({
-        size,
-        content: [
-          {
-            type: "text",
-            content: prompt.prompt,
-          },
-        ],
-        system_message: prompt.systemMessage,
-        stream: false,
-        continual_learning: prompt.continualLearning,
-        weights: prompt.continualLearningEnabled ? currentWeights : undefined,
-        tools: toVisionTools(request.tools),
-      }),
-    })
+    try {
+      const visionResponse = await fetch(DEFAULT_VISION_ENDPOINT, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-Key": apiKey,
+        },
+        signal: controller.signal,
+        body: JSON.stringify({
+          size,
+          content,
+          system_message: prompt.systemMessage,
+          stream: false,
+          continual_learning: prompt.continualLearning,
+          weights: prompt.continualLearningEnabled ? currentWeights : undefined,
+          tools: toVisionTools(request.tools),
+        }),
+      })
 
-    if (!visionResponse.ok) {
-      const text = await visionResponse.text()
-      let errorMessage = text
-      try {
-        const parsed = JSON.parse(text)
-        errorMessage = parsed.error || parsed.message || text
-      } catch {
-        // Not JSON
-      }
-      const error = new Error(cleanErrorMessage(errorMessage))
-        ; (error as any).status = visionResponse.status
-      throw error
-    }
-
-    const payload = (await visionResponse.json()) as VisionResponse
-    if (payload.status !== "success" || (payload.data && (payload.data as any).status === false)) {
-      const message = payload.message || payload.error || (payload.data as any)?.message || "Unknown Vision API error"
-      const error = new Error(cleanErrorMessage(message))
-
-      // Map application-level errors to appropriate HTTP status codes
-      let status = 400 // Default to Bad Request
-      const lowerMessage = message.toLowerCase()
-      if (lowerMessage.includes("key") || lowerMessage.includes("unauthorized") || lowerMessage.includes("auth") || lowerMessage.includes("verify")) {
-        // Use 400 for fatal auth errors to prevent SDK retries
-        status = 400
-      } else if (
-        lowerMessage.includes("unit") ||
-        lowerMessage.includes("balance") ||
-        lowerMessage.includes("quota") ||
-        lowerMessage.includes("credit")
-      ) {
-        status = 402
-      } else if (lowerMessage.includes("rate limit") || lowerMessage.includes("too many requests")) {
-        status = 429
+      if (!visionResponse.ok) {
+        const text = await visionResponse.text()
+        let errorMessage = text
+        try {
+          const parsed = JSON.parse(text)
+          errorMessage = parsed.error || parsed.message || text
+        } catch {
+          // Not JSON
+        }
+        const error = new Error(cleanErrorMessage(errorMessage))
+          ; (error as any).status = visionResponse.status
+        throw error
       }
 
-      ; (error as any).status = status
-      throw error
-    }
+      const payload = (await visionResponse.json()) as VisionResponse
+      if (payload.status !== "success" || (payload.data && (payload.data as any).status === false)) {
+        const message = payload.message || payload.error || (payload.data as any)?.message || "Unknown Vision API error"
+        const error = new Error(cleanErrorMessage(message))
 
-    return {
-      modelId,
-      payload,
-      weights: extractVisionWeights(payload),
+        let status = 400
+        const lowerMessage = message.toLowerCase()
+        if (lowerMessage.includes("key") || lowerMessage.includes("unauthorized") || lowerMessage.includes("auth") || lowerMessage.includes("verify")) {
+          status = 400
+        } else if (
+          lowerMessage.includes("unit") ||
+          lowerMessage.includes("balance") ||
+          lowerMessage.includes("quota") ||
+          lowerMessage.includes("credit")
+        ) {
+          status = 402
+        } else if (lowerMessage.includes("rate limit") || lowerMessage.includes("too many requests")) {
+          status = 429
+        }
+
+        ; (error as any).status = status
+        throw error
+      }
+
+      return {
+        modelId,
+        payload,
+        weights: extractVisionWeights(payload),
+      }
+    } finally {
+      clearTimeout(timeoutId)
     }
-  } finally {
-    clearTimeout(timeoutId)
   }
+
+  const nativeContent = await buildVisionContent(prompt.prompt, prompt.attachments)
+  const nativeResult = await sendVisionRequest(nativeContent)
+  if (!hasVideoAttachments) {
+    return nativeResult
+  }
+
+  const videoFailure = extractVisionVideoFailureMessage(nativeResult.payload)
+  if (videoFailure) {
+    const error = new Error(videoFailure)
+      ; (error as any).status = 502
+    throw error
+  }
+
+  return nativeResult
 }
 
 export class VisionProxyServer {
