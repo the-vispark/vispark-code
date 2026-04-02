@@ -5,7 +5,7 @@ import { DEV_CLIENT_PORT } from "../shared/ports"
 import { AppSettingsStore } from "./app-settings"
 import { EventStore } from "./event-store"
 import { AgentCoordinator } from "./agent"
-import { generateTitleForChat } from "./generate-title"
+import { generateTitleForChatDetailed } from "./generate-title"
 import { getHarnessRuntimeInfo } from "./harness-sdk"
 import { discoverProjects, type DiscoveredProject } from "./discovery"
 import { FileTreeManager } from "./file-tree-manager"
@@ -142,7 +142,7 @@ export async function startVisparkCodeServer(options: StartVisparkCodeServerOpti
       router.broadcastSnapshots()
     },
     generateTitle: (messageContent, cwd) =>
-      generateTitleForChat(messageContent, cwd, {
+      generateTitleForChatDetailed(messageContent, cwd, {
         apiKey: settings.getSnapshot().visionApiKey,
       }),
   })

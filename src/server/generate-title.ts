@@ -15,18 +15,18 @@ function normalizeGeneratedTitle(value: unknown): string | null {
   return normalized
 }
 
-function fallbackTitleFromMessage(messageContent: string): string | null {
-  const normalized = messageContent
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/^["'`]+|["'`]+$/g, "")
+export function fallbackTitleFromMessage(messageContent: string): string | null {
+  const normalized = messageContent.replace(/\s+/g, " ").trim()
 
   if (!normalized) return null
+  if (normalized.length <= 35) return normalized
+  return `${normalized.slice(0, 35)}...`
+}
 
-  const snippet = normalized.slice(0, 48).trim()
-  if (!snippet || snippet === "New Chat") return null
-
-  return snippet
+export interface GenerateChatTitleResult {
+  title: string | null
+  usedFallback: boolean
+  failureMessage: string | null
 }
 
 export async function generateTitleForChat(
@@ -37,10 +37,27 @@ export async function generateTitleForChat(
     fetchImpl?: FetchLike
   } = {}
 ): Promise<string | null> {
+  const result = await generateTitleForChatDetailed(messageContent, cwd, options)
+  return result.title
+}
+
+export async function generateTitleForChatDetailed(
+  messageContent: string,
+  cwd: string,
+  options: {
+    apiKey?: string
+    fetchImpl?: FetchLike
+  } = {}
+): Promise<GenerateChatTitleResult> {
   void cwd
+  const fallbackTitle = fallbackTitleFromMessage(messageContent)
   const apiKey = options.apiKey?.trim()
   if (!apiKey) {
-    return fallbackTitleFromMessage(messageContent)
+    return {
+      title: fallbackTitle,
+      usedFallback: true,
+      failureMessage: null,
+    }
   }
 
   try {
@@ -68,12 +85,33 @@ export async function generateTitleForChat(
     })
 
     if (!response.ok) {
-      return fallbackTitleFromMessage(messageContent)
+      return {
+        title: fallbackTitle,
+        usedFallback: true,
+        failureMessage: `Vision title request failed with status ${response.status}`,
+      }
     }
 
     const payload = await response.json() as VisionTitleResponse
-    return normalizeGeneratedTitle(payload.data?.content) ?? fallbackTitleFromMessage(messageContent)
-  } catch {
-    return fallbackTitleFromMessage(messageContent)
+    const title = normalizeGeneratedTitle(payload.data?.content)
+    if (title) {
+      return {
+        title,
+        usedFallback: false,
+        failureMessage: null,
+      }
+    }
+
+    return {
+      title: fallbackTitle,
+      usedFallback: true,
+      failureMessage: "Vision title response was empty or invalid",
+    }
+  } catch (error) {
+    return {
+      title: fallbackTitle,
+      usedFallback: true,
+      failureMessage: error instanceof Error ? error.message : String(error),
+    }
   }
 }

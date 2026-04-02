@@ -103,6 +103,7 @@ export interface SidebarChatRow {
   chatId: string
   title: string
   status: VisparkCodeStatus
+  unread: boolean
   localPath: string
   provider: AgentProvider | null
   lastMessageAt?: number

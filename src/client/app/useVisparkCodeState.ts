@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react"
 import { useNavigate } from "react-router-dom"
 import { APP_NAME } from "../../shared/branding"
-import { PROVIDERS, type AgentProvider, type AppSettingsSnapshot, type AskUserQuestionAnswerMap, type KeybindingsSnapshot, type ModelOptions, type ProviderCatalogEntry, type UpdateInstallResult, type UpdateSnapshot } from "../../shared/types"
-import { useChatPreferencesStore } from "../stores/chatPreferencesStore"
+import { DEFAULT_VISION_MODEL_OPTIONS, PROVIDERS, type AgentProvider, type AppSettingsSnapshot, type AskUserQuestionAnswerMap, type KeybindingsSnapshot, type ModelOptions, type ProviderCatalogEntry, type UpdateInstallResult, type UpdateSnapshot } from "../../shared/types"
+import { NEW_CHAT_COMPOSER_ID, type ComposerState, useChatPreferencesStore } from "../stores/chatPreferencesStore"
 import { useRightSidebarStore } from "../stores/rightSidebarStore"
 import { useTerminalLayoutStore } from "../stores/terminalLayoutStore"
 import { getEditorPresetLabel, useTerminalPreferencesStore } from "../stores/terminalPreferencesStore"
@@ -18,6 +18,10 @@ export function getNewestRemainingChatId(projectGroups: SidebarData["projectGrou
   if (!projectGroup) return null
 
   return projectGroup.chats.find((chat) => chat.chatId !== activeChatId)?.chatId ?? null
+}
+
+export function shouldMarkActiveChatRead(doc: Pick<Document, "visibilityState" | "hasFocus"> = document) {
+  return doc.visibilityState === "visible" && doc.hasFocus()
 }
 
 function wsUrl() {
@@ -49,6 +53,25 @@ function logVisparkCodeState(message: string, details?: unknown) {
   }
 
   console.info(`[useVisparkCodeState] ${message}`, details)
+}
+
+function composerStateFromSendOptions(options?: {
+  provider?: AgentProvider
+  model?: string
+  modelOptions?: ModelOptions
+  planMode?: boolean
+}): ComposerState | null {
+  if (options?.provider !== "vision" || !options.model) return null
+
+  return {
+    provider: "vision",
+    model: options.model,
+    modelOptions: {
+      ...DEFAULT_VISION_MODEL_OPTIONS,
+      ...(options.modelOptions?.vision ?? {}),
+    },
+    planMode: Boolean(options.planMode),
+  }
 }
 
 export function shouldAutoFollowTranscript(distanceFromBottom: number) {
@@ -173,6 +196,7 @@ export interface VisparkCodeState {
   handleCancel: () => Promise<void>
   handleDeleteChat: (chat: SidebarChatRow) => Promise<void>
   handleRemoveProject: (projectId: string) => Promise<void>
+  handleCopyPath: (localPath: string) => Promise<void>
   handleOpenExternal: (action: "open_finder" | "open_terminal" | "open_editor") => Promise<void>
   handleOpenExternalPath: (action: "open_finder" | "open_editor", localPath: string) => Promise<void>
   handleOpenLocalLink: (target: { path: string; line?: number; column?: number }) => Promise<void>
@@ -214,6 +238,7 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
   const [commandError, setCommandError] = useState<string | null>(null)
   const [startingLocalPath, setStartingLocalPath] = useState<string | null>(null)
   const [pendingChatId, setPendingChatId] = useState<string | null>(null)
+  const [focusEpoch, setFocusEpoch] = useState(0)
   const editorLabel = getEditorPresetLabel(useTerminalPreferencesStore((store) => store.editorPreset))
   const transcriptAutoScroll = useChatPreferencesStore((store) => store.transcriptAutoScroll)
 
@@ -298,6 +323,20 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
   }, [socket])
 
   useEffect(() => {
+    function handleFocusSignal() {
+      setFocusEpoch((value) => value + 1)
+    }
+
+    window.addEventListener("focus", handleFocusSignal)
+    document.addEventListener("visibilitychange", handleFocusSignal)
+
+    return () => {
+      window.removeEventListener("focus", handleFocusSignal)
+      document.removeEventListener("visibilitychange", handleFocusSignal)
+    }
+  }, [])
+
+  useEffect(() => {
     if (!activeChatId) {
       logVisparkCodeState("clearing chat snapshot for non-chat route")
       setChatSnapshot(null)
@@ -352,6 +391,21 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
       setPendingChatId(null)
     }
   }, [chatSnapshot, pendingChatId])
+
+  useEffect(() => {
+    if (!activeChatId || !sidebarReady) return
+    if (!shouldMarkActiveChatRead()) return
+
+    const activeSidebarChat = sidebarData.projectGroups
+      .flatMap((group) => group.chats)
+      .find((chat) => chat.chatId === activeChatId)
+
+    if (!activeSidebarChat?.unread) return
+
+    void socket.command({ type: "chat.markRead", chatId: activeChatId }).catch((error) => {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    })
+  }, [activeChatId, focusEpoch, sidebarData.projectGroups, sidebarReady, socket])
 
   useEffect(() => {
     initialScrollCompletedRef.current = false
@@ -476,8 +530,12 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
   }
 
   async function createChatForProject(projectId: string) {
-    useChatPreferencesStore.getState().initializeComposerForNewChat()
+    const chatPreferences = useChatPreferencesStore.getState()
+    const sourceComposerState = activeChatId
+      ? chatPreferences.getComposerState(activeChatId)
+      : chatPreferences.getComposerState(NEW_CHAT_COMPOSER_ID)
     const result = await socket.command<{ chatId: string }>({ type: "chat.create", projectId })
+    chatPreferences.initializeComposerForChat(result.chatId, { sourceState: sourceComposerState })
     setSelectedProjectId(projectId)
     setPendingChatId(result.chatId)
     navigate(`/chat/${result.chatId}`)
@@ -618,6 +676,11 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
       })
 
       if (!activeChatId && result.chatId) {
+        const chatPreferences = useChatPreferencesStore.getState()
+        chatPreferences.setComposerState(
+          result.chatId,
+          composerStateFromSendOptions(options) ?? chatPreferences.getComposerState(NEW_CHAT_COMPOSER_ID)
+        )
         setPendingChatId(result.chatId)
         navigate(`/chat/${result.chatId}`)
       }
@@ -675,6 +738,18 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
       if (runtime?.projectId === projectId) {
         navigate("/")
       }
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  async function handleCopyPath(localPath: string) {
+    try {
+      if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+        throw new Error("Clipboard is not available")
+      }
+      await navigator.clipboard.writeText(localPath)
       setCommandError(null)
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
@@ -773,7 +848,7 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
   async function handleExitPlanMode(toolUseId: string, confirmed: boolean, clearContext?: boolean, message?: string) {
     if (!activeChatId) return
     if (confirmed) {
-      useChatPreferencesStore.getState().setComposerPlanMode(false)
+      useChatPreferencesStore.getState().setChatComposerPlanMode(activeChatId, false)
     }
     try {
       await socket.command({
@@ -837,6 +912,7 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     handleCancel,
     handleDeleteChat,
     handleRemoveProject,
+    handleCopyPath,
     handleOpenExternal,
     handleOpenExternalPath,
     handleOpenLocalLink,

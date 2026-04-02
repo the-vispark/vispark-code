@@ -10,7 +10,7 @@ import type { ClientCommand } from "../shared/protocol"
 import { normalizeToolCall } from "../shared/tools"
 import { query, type CanUseTool, type PermissionResult, type Query } from "./harness-sdk"
 import { EventStore } from "./event-store"
-import { generateTitleForChat } from "./generate-title"
+import { fallbackTitleFromMessage, type GenerateChatTitleResult, generateTitleForChatDetailed } from "./generate-title"
 import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-types"
 import {
   getServerProviderCatalog,
@@ -61,7 +61,7 @@ interface ActiveTurn {
 interface AgentCoordinatorArgs {
   store: EventStore
   onStateChange: () => void
-  generateTitle?: (messageContent: string, cwd: string) => Promise<string | null>
+  generateTitle?: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
 }
 
 function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(
@@ -389,13 +389,18 @@ function formatErrorMessage(error: unknown): string {
 export class AgentCoordinator {
   private readonly store: EventStore
   private readonly onStateChange: () => void
-  private readonly generateTitle: (messageContent: string, cwd: string) => Promise<string | null>
+  private readonly generateTitle: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
+  private reportBackgroundError: ((message: string) => void) | null = null
   readonly activeTurns = new Map<string, ActiveTurn>()
 
   constructor(args: AgentCoordinatorArgs) {
     this.store = args.store
     this.onStateChange = args.onStateChange
-    this.generateTitle = args.generateTitle ?? generateTitleForChat
+    this.generateTitle = args.generateTitle ?? generateTitleForChatDetailed
+  }
+
+  setBackgroundErrorReporter(report: ((message: string) => void) | null) {
+    this.reportBackgroundError = report
   }
 
   getActiveStatuses() {
@@ -450,6 +455,11 @@ export class AgentCoordinator {
 
     const existingMessages = this.store.getMessages(args.chatId)
     const shouldGenerateTitle = args.appendUserPrompt && chat.title === "New Chat" && existingMessages.length === 0
+    const optimisticTitle = shouldGenerateTitle ? fallbackTitleFromMessage(args.content) : null
+
+    if (optimisticTitle) {
+      await this.store.renameChat(args.chatId, optimisticTitle)
+    }
 
     if (args.appendUserPrompt) {
       await this.store.appendMessage(
@@ -465,7 +475,7 @@ export class AgentCoordinator {
     }
 
     if (shouldGenerateTitle) {
-      void this.generateTitleInBackground(args.chatId, args.content, project.localPath)
+      void this.generateTitleInBackground(args.chatId, args.content, project.localPath, optimisticTitle ?? "New Chat")
     }
 
     const onToolRequest = async (request: HarnessToolRequest): Promise<unknown> => {
@@ -551,18 +561,22 @@ export class AgentCoordinator {
     return { chatId }
   }
 
-  private async generateTitleInBackground(chatId: string, messageContent: string, cwd: string) {
+  private async generateTitleInBackground(chatId: string, messageContent: string, cwd: string, expectedCurrentTitle: string) {
     try {
-      const title = await this.generateTitle(messageContent, cwd)
-      if (!title) return
+      const result = await this.generateTitle(messageContent, cwd)
+      if (result.failureMessage) {
+        this.reportBackgroundError?.(`[title-generation] chat ${chatId} failed: ${result.failureMessage}`)
+      }
+      if (!result.title || result.usedFallback) return
 
       const chat = this.store.requireChat(chatId)
-      if (chat.title !== "New Chat") return
+      if (chat.title !== expectedCurrentTitle) return
 
-      await this.store.renameChat(chatId, title)
+      await this.store.renameChat(chatId, result.title)
       this.onStateChange()
-    } catch {
-      // Ignore background title generation failures.
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.reportBackgroundError?.(`[title-generation] chat ${chatId} failed: ${message}`)
     }
   }
 

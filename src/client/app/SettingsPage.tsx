@@ -24,6 +24,7 @@ import type { EditorPreset } from "../../shared/protocol"
 import { SegmentedControl } from "../components/ui/segmented-control"
 import { useAppDialog } from "../components/ui/app-dialog"
 import { useTheme, type ThemePreference } from "../hooks/useTheme"
+import { playChatNotificationSound } from "../lib/chatSounds"
 import { KEYBINDING_ACTION_LABELS, formatKeybindingInput, getResolvedKeybindings, parseKeybindingInput } from "../lib/keybindings"
 import { cn } from "../lib/utils"
 import {
@@ -36,6 +37,7 @@ import {
   useTerminalPreferencesStore,
 } from "../stores/terminalPreferencesStore"
 import { useChatPreferencesStore } from "../stores/chatPreferencesStore"
+import { CHAT_SOUND_OPTIONS, useChatSoundPreferencesStore } from "../stores/chatSoundPreferencesStore"
 import type { VisparkCodeState } from "./useVisparkCodeState"
 
 const themeOptions = [
@@ -69,6 +71,17 @@ const continualLearningOptions = [
 const transcriptAutoScrollOptions = [
   { value: "on" as const, label: "On" },
   { value: "off" as const, label: "Off" },
+]
+
+const transcriptTocOptions = [
+  { value: "on" as const, label: "On" },
+  { value: "off" as const, label: "Off" },
+]
+
+const chatSoundPreferenceOptions = [
+  { value: "never" as const, label: "Never" },
+  { value: "unfocused" as const, label: "When Unfocused" },
+  { value: "always" as const, label: "Always" },
 ]
 
 const FALLBACK_VISION_WEIGHTS_PATH = "~/.vispark-code/data/vision-continual-learning-weights.txt"
@@ -123,6 +136,10 @@ export function getGeneralHeaderAction(updateSnapshot: UpdateSnapshot | null) {
     spinning: isChecking,
     variant: "outline" as const,
   }
+}
+
+export function shouldPreviewChatSoundChange(previousValue: string, nextValue: string) {
+  return previousValue !== nextValue
 }
 
 export function resetSettingsPageChangelogCache() {
@@ -395,8 +412,14 @@ export function SettingsPage() {
   const keybindings = state.keybindings
   const visionContinualLearning = useChatPreferencesStore((store) => store.providerDefaults.vision.modelOptions.continualLearning)
   const transcriptAutoScroll = useChatPreferencesStore((store) => store.transcriptAutoScroll)
+  const showTranscriptToc = useChatPreferencesStore((store) => store.showTranscriptToc)
   const setVisionContinualLearningPreference = useChatPreferencesStore((store) => store.setVisionContinualLearningPreference)
   const setTranscriptAutoScroll = useChatPreferencesStore((store) => store.setTranscriptAutoScroll)
+  const setShowTranscriptToc = useChatPreferencesStore((store) => store.setShowTranscriptToc)
+  const chatSoundPreference = useChatSoundPreferencesStore((store) => store.chatSoundPreference)
+  const chatSoundId = useChatSoundPreferencesStore((store) => store.chatSoundId)
+  const setChatSoundPreference = useChatSoundPreferencesStore((store) => store.setChatSoundPreference)
+  const setChatSoundId = useChatSoundPreferencesStore((store) => store.setChatSoundId)
   const resolvedKeybindings = useMemo(() => getResolvedKeybindings(keybindings), [keybindings])
   const keybindingsFilePathDisplay = resolvedKeybindings.filePathDisplay || getKeybindingsFilePathDisplay()
   const [scrollbackDraft, setScrollbackDraft] = useState(String(scrollbackLines))
@@ -489,6 +512,10 @@ export function SettingsPage() {
 
   function commitEditorCommand() {
     setEditorCommandTemplate(editorCommandDraft)
+  }
+
+  function previewChatSound(soundId = chatSoundId) {
+    void playChatNotificationSound(soundId, 1).catch(() => undefined)
   }
 
   async function saveVisionApiKey() {
@@ -741,6 +768,71 @@ export function SettingsPage() {
                     options={transcriptAutoScrollOptions}
                     size="sm"
                   />
+                </SettingsRow>
+
+                <SettingsRow
+                  title="Transcript Table of Contents"
+                  description="Show a right-side transcript TOC panel for jumping between visible user prompts on wider layouts."
+                >
+                  <SegmentedControl
+                    value={showTranscriptToc ? "on" : "off"}
+                    onValueChange={(value) => setShowTranscriptToc(value === "on")}
+                    options={transcriptTocOptions}
+                    size="sm"
+                  />
+                </SettingsRow>
+
+                <SettingsRow
+                  title="Chat Sound Effects"
+                  description="Play configurable audio cues for unread and waiting chats."
+                  alignStart
+                >
+                  <div className="flex w-full flex-col gap-2 md:w-auto md:min-w-[420px] md:items-end">
+                    <div className="flex flex-wrap items-center gap-2 md:justify-end">
+                      <SegmentedControl
+                        value={chatSoundPreference}
+                        onValueChange={(value) => {
+                          const nextValue = value as typeof chatSoundPreference
+                          const shouldPreview = shouldPreviewChatSoundChange(chatSoundPreference, nextValue) && nextValue !== "never"
+                          setChatSoundPreference(nextValue)
+                          if (shouldPreview) {
+                            previewChatSound()
+                          }
+                        }}
+                        options={chatSoundPreferenceOptions}
+                        size="sm"
+                      />
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 md:justify-end">
+                      <select
+                        value={chatSoundId}
+                        onChange={(event) => {
+                          const nextValue = event.target.value as typeof chatSoundId
+                          const shouldPreview = shouldPreviewChatSoundChange(chatSoundId, nextValue) && chatSoundPreference !== "never"
+                          setChatSoundId(nextValue)
+                          if (shouldPreview) {
+                            previewChatSound(nextValue)
+                          }
+                        }}
+                        className="min-w-[160px] rounded-lg border border-border bg-background px-3 py-2 pr-10 text-sm text-foreground outline-none"
+                      >
+                        {CHAT_SOUND_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={chatSoundPreference === "never"}
+                        onClick={() => previewChatSound()}
+                      >
+                        Preview
+                      </Button>
+                    </div>
+                  </div>
                 </SettingsRow>
 
                 <SettingsRow

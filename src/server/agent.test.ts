@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import type { ChatAttachment } from "../shared/types"
-import { buildAttachmentHintText, buildPromptText, normalizeHarnessStreamMessage } from "./agent"
+import { AgentCoordinator, buildAttachmentHintText, buildPromptText, normalizeHarnessStreamMessage } from "./agent"
 
 describe("normalizeHarnessStreamMessage", () => {
   test("normalizes assistant tool calls", () => {
@@ -104,5 +104,60 @@ describe("attachment prompt helpers", () => {
     }])
 
     expect(hint).toContain("&quot;report&quot; &lt;draft&gt;.txt")
+  })
+})
+
+describe("background title generation", () => {
+  test("renames chats when background title generation succeeds", async () => {
+    const chat = { id: "chat-1", title: "first message" }
+    const store = {
+      requireChat: () => chat,
+      renameChat: async (_chatId: string, title: string) => {
+        chat.title = title
+      },
+    }
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      generateTitle: async () => ({
+        title: "Better title",
+        usedFallback: false,
+        failureMessage: null,
+      }),
+    })
+
+    await (coordinator as any).generateTitleInBackground("chat-1", "first message", "/tmp/project", "first message")
+
+    expect(chat.title).toBe("Better title")
+  })
+
+  test("reports title-generation failures without overwriting the optimistic title", async () => {
+    const chat = { id: "chat-1", title: "first message" }
+    const store = {
+      requireChat: () => chat,
+      renameChat: async (_chatId: string, title: string) => {
+        chat.title = title
+      },
+    }
+    const errors: string[] = []
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      generateTitle: async () => ({
+        title: "first message",
+        usedFallback: true,
+        failureMessage: "network issue",
+      }),
+    })
+    coordinator.setBackgroundErrorReporter((message) => {
+      errors.push(message)
+    })
+
+    await (coordinator as any).generateTitleInBackground("chat-1", "first message", "/tmp/project", "first message")
+
+    expect(chat.title).toBe("first message")
+    expect(errors).toEqual([
+      "[title-generation] chat chat-1 failed: network issue",
+    ])
   })
 })

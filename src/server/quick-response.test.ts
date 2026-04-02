@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { generateTitleForChat } from "./generate-title"
+import { fallbackTitleFromMessage, generateTitleForChat, generateTitleForChatDetailed } from "./generate-title"
 import { QuickResponseAdapter } from "./quick-response"
 
 describe("QuickResponseAdapter", () => {
@@ -101,9 +101,9 @@ describe("generateTitleForChat", () => {
     expect(title).toBe("hello")
   })
 
-  test("falls back to a short snippet when the native title request fails", async () => {
+  test("falls back to the first 35 characters of the message with ellipsis when the native title request fails", async () => {
     const title = await generateTitleForChat(
-      "Build a realtime terminal UI for the project dashboard with tabs",
+      "This message is definitely longer than thirty five characters",
       "/tmp/project",
       {
         apiKey: "vl_test",
@@ -113,11 +113,40 @@ describe("generateTitleForChat", () => {
       }
     )
 
-    expect(title).toBe("Build a realtime terminal UI for the project das")
+    expect(title).toBe("This message is definitely longer t...")
   })
 
   test("falls back immediately when no API key is available", async () => {
     const title = await generateTitleForChat("hello there", "/tmp/project")
     expect(title).toBe("hello there")
+  })
+
+  test("returns fallback metadata when the Vision title request fails", async () => {
+    const result = await generateTitleForChatDetailed(
+      "hello there",
+      "/tmp/project",
+      {
+        apiKey: "vl_test",
+        fetchImpl: async () => {
+          throw new Error("network issue")
+        },
+      }
+    )
+
+    expect(result).toEqual({
+      title: "hello there",
+      usedFallback: true,
+      failureMessage: "network issue",
+    })
+  })
+})
+
+describe("fallbackTitleFromMessage", () => {
+  test("normalizes whitespace", () => {
+    expect(fallbackTitleFromMessage("  hello\n   world  ")).toBe("hello world")
+  })
+
+  test("returns null for blank input", () => {
+    expect(fallbackTitleFromMessage("   \n  ")).toBeNull()
   })
 })

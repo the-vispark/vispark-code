@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { migrateChatPreferencesState, useChatPreferencesStore } from "./chatPreferencesStore"
+import {
+  DEFAULT_SHOW_TRANSCRIPT_TOC,
+  migrateChatPreferencesState,
+  NEW_CHAT_COMPOSER_ID,
+  useChatPreferencesStore,
+} from "./chatPreferencesStore"
 
 const INITIAL_STATE = useChatPreferencesStore.getInitialState()
 
@@ -42,7 +47,9 @@ describe("migrateChatPreferencesState", () => {
         modelOptions: { continualLearning: false },
         planMode: false,
       },
+      chatStates: {},
       transcriptAutoScroll: false,
+      showTranscriptToc: true,
     })
   })
 
@@ -65,6 +72,21 @@ describe("migrateChatPreferencesState", () => {
     })
 
     expect(migrated.transcriptAutoScroll).toBe(true)
+  })
+
+  test("defaults transcript TOC visibility to enabled for older snapshots", () => {
+    const migrated = migrateChatPreferencesState({
+      defaultProvider: "last_used",
+      providerDefaults: {
+        vision: {
+          model: "vispark/vision-medium",
+          modelOptions: { continualLearning: true },
+          planMode: false,
+        },
+      },
+    })
+
+    expect(migrated.showTranscriptToc).toBe(true)
   })
 })
 
@@ -127,6 +149,16 @@ describe("chat preference store", () => {
     useChatPreferencesStore.getState().setTranscriptAutoScroll(false)
 
     expect(useChatPreferencesStore.getState().transcriptAutoScroll).toBe(false)
+  })
+
+  test("defaults transcript TOC visibility to enabled", () => {
+    expect(useChatPreferencesStore.getState().showTranscriptToc).toBe(DEFAULT_SHOW_TRANSCRIPT_TOC)
+  })
+
+  test("can update transcript TOC visibility independently", () => {
+    useChatPreferencesStore.getState().setShowTranscriptToc(false)
+
+    expect(useChatPreferencesStore.getState().showTranscriptToc).toBe(false)
   })
 
   test("resetComposerFromProvider copies provider defaults into composer state", () => {
@@ -200,6 +232,58 @@ describe("chat preference store", () => {
       provider: "vision",
       model: "vispark/vision-small",
       modelOptions: { continualLearning: false },
+      planMode: true,
+    })
+  })
+
+  test("initializes per-chat composer state from the current source state", () => {
+    const store = useChatPreferencesStore.getState()
+
+    store.setComposerState(NEW_CHAT_COMPOSER_ID, {
+      provider: "vision",
+      model: "vispark/vision-large",
+      modelOptions: { continualLearning: true },
+      planMode: true,
+    })
+    store.initializeComposerForChat("chat-a", {
+      sourceState: store.getComposerState(NEW_CHAT_COMPOSER_ID),
+    })
+
+    expect(store.getComposerState("chat-a")).toEqual({
+      provider: "vision",
+      model: "vispark/vision-large",
+      modelOptions: { continualLearning: true },
+      planMode: true,
+    })
+  })
+
+  test("keeps composer state isolated per chat", () => {
+    const store = useChatPreferencesStore.getState()
+
+    store.setComposerState("chat-a", {
+      provider: "vision",
+      model: "vispark/vision-small",
+      modelOptions: { continualLearning: false },
+      planMode: false,
+    })
+    store.setComposerState("chat-b", {
+      provider: "vision",
+      model: "vispark/vision-large",
+      modelOptions: { continualLearning: true },
+      planMode: true,
+    })
+    store.setChatComposerPlanMode("chat-a", true)
+
+    expect(store.getComposerState("chat-a")).toEqual({
+      provider: "vision",
+      model: "vispark/vision-small",
+      modelOptions: { continualLearning: false },
+      planMode: true,
+    })
+    expect(store.getComposerState("chat-b")).toEqual({
+      provider: "vision",
+      model: "vispark/vision-large",
+      modelOptions: { continualLearning: true },
       planMode: true,
     })
   })

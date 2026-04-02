@@ -11,7 +11,7 @@ import { CHAT_INPUT_ATTRIBUTE, focusNextChatInput } from "../../app/chatFocusPol
 import { useIsStandalone } from "../../hooks/useIsStandalone"
 import { cn } from "../../lib/utils"
 import { useChatInputStore } from "../../stores/chatInputStore"
-import { type ComposerState, useChatPreferencesStore } from "../../stores/chatPreferencesStore"
+import { NEW_CHAT_COMPOSER_ID, type ComposerState, useChatPreferencesStore } from "../../stores/chatPreferencesStore"
 import { AttachmentFileCard, AttachmentImageCard } from "../messages/AttachmentCard"
 import { AttachmentPreviewModal } from "../messages/AttachmentPreviewModal"
 import { classifyAttachmentPreview } from "../messages/attachmentPreview"
@@ -23,6 +23,13 @@ import { ChatPreferenceControls } from "./ChatPreferenceControls"
 const MAX_FILES_PER_DROP = 10
 const MAX_CONCURRENT_UPLOADS = 3
 
+const CLIPBOARD_EXTENSION_BY_MIME_TYPE: Record<string, string> = {
+  "image/gif": "gif",
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+}
+
 export function willExceedAttachmentLimit(args: {
   currentAttachmentCount: number
   queuedAttachmentCount: number
@@ -31,6 +38,51 @@ export function willExceedAttachmentLimit(args: {
 }) {
   const maxAttachments = args.maxAttachments ?? MAX_FILES_PER_DROP
   return args.currentAttachmentCount + args.queuedAttachmentCount + args.incomingAttachmentCount > maxAttachments
+}
+
+type ClipboardFileItem = Pick<DataTransferItem, "kind" | "type" | "getAsFile">
+
+function hasClipboardTextPayload(clipboardData: DataTransfer | null | undefined) {
+  if (!clipboardData) return false
+  return clipboardData.types.includes("text/plain") || clipboardData.types.includes("text/html")
+}
+
+function getClipboardImageExtension(file: File) {
+  return CLIPBOARD_EXTENSION_BY_MIME_TYPE[file.type] ?? "bin"
+}
+
+function isGenericClipboardImageName(file: File) {
+  const normalized = file.name.trim().toLowerCase()
+  if (!normalized) return true
+
+  const expectedExtension = getClipboardImageExtension(file)
+  return normalized === `image.${expectedExtension}` || normalized === "image.png"
+}
+
+function normalizeClipboardImageFile(file: File, index: number, timestamp: number) {
+  if (file.name && !isGenericClipboardImageName(file)) return file
+
+  const extension = getClipboardImageExtension(file)
+  const suffix = index === 0 ? "" : `-${index}`
+  const fileName = `clipboard-${timestamp}${suffix}.${extension}`
+  Object.defineProperty(file, "name", {
+    configurable: true,
+    value: fileName,
+  })
+  return file
+}
+
+export function getClipboardImageFiles(items: Iterable<ClipboardFileItem>, timestamp: number) {
+  const files: File[] = []
+
+  for (const item of items) {
+    if (item.kind !== "file" || !item.type.startsWith("image/")) continue
+    const file = item.getAsFile()
+    if (!file) continue
+    files.push(normalizeClipboardImageFile(file, files.length, timestamp))
+  }
+
+  return files
 }
 
 interface ComposerAttachment extends ChatAttachment {
@@ -128,21 +180,22 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     clearAttachmentDrafts,
   } = useChatInputStore()
   const {
-    composerState,
-    providerDefaults,
-    setVisionModelPreference,
-    setVisionContinualLearningPreference,
-    setComposerModelOptions,
-    setComposerPlanMode,
-    resetComposerFromProvider,
+    getComposerState,
+    initializeComposerForChat,
+    setChatComposerModel,
+    setChatComposerModelOptions,
+    setChatComposerPlanMode,
+    resetChatComposerFromProvider,
   } = useChatPreferencesStore()
+  const composerChatId = chatId ?? NEW_CHAT_COMPOSER_ID
+  const storedComposerState = useChatPreferencesStore((state) => (
+    composerChatId === NEW_CHAT_COMPOSER_ID ? state.composerState : state.chatStates[composerChatId]
+  ))
+  const composerState = storedComposerState ?? getComposerState(composerChatId)
   const [value, setValue] = useState(() => (chatId ? getDraft(chatId) : ""))
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const isStandalone = useIsStandalone()
-  const [lockedComposerState, setLockedComposerState] = useState<ComposerState | null>(() => (
-    activeProvider ? createLockedComposerState(activeProvider, composerState, providerDefaults) : null
-  ))
   const [attachments, setAttachments] = useState<ComposerAttachment[]>(() => (
     hydrateComposerAttachments(chatId ? getAttachmentDrafts(chatId) : [])
   ))
@@ -157,9 +210,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const latestChatIdRef = useRef<string | null>(chatId ?? null)
 
   const providerLocked = activeProvider !== null
-  const providerPrefs = providerLocked
-    ? lockedComposerState ?? createLockedComposerState(activeProvider, composerState, providerDefaults)
-    : composerState
+  const providerPrefs = composerState
   const selectedProvider = providerLocked ? activeProvider : composerState.provider
   const providerConfig = availableProviders.find((provider) => provider.id === selectedProvider) ?? availableProviders[0]
   const showPlanMode = providerConfig?.supportsPlanMode ?? false
@@ -227,17 +278,12 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }, [chatId])
 
   useEffect(() => {
-    latestChatIdRef.current = chatId ?? null
-  }, [chatId])
+    initializeComposerForChat(composerChatId)
+  }, [composerChatId, initializeComposerForChat])
 
   useEffect(() => {
-    if (activeProvider === null) {
-      setLockedComposerState(null)
-      return
-    }
-
-    setLockedComposerState(createLockedComposerState(activeProvider, composerState, providerDefaults))
-  }, [activeProvider, chatId, composerState, providerDefaults])
+    latestChatIdRef.current = chatId ?? null
+  }, [chatId])
 
   useEffect(() => {
     uploadGenerationRef.current += 1
@@ -290,42 +336,11 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }, [cleanupAttachmentPreview])
 
   function setVisionModelOptions(modelOptions: Partial<VisionModelOptions>) {
-    if (providerLocked) {
-      setLockedComposerState((current) => {
-        const next = current ?? createLockedComposerState(selectedProvider, composerState, providerDefaults)
-        return {
-          ...next,
-          modelOptions: { ...next.modelOptions, ...modelOptions },
-        }
-      })
-    }
-
-    if (typeof modelOptions.continualLearning === "boolean") {
-      setVisionContinualLearningPreference(modelOptions.continualLearning)
-      return
-    }
-
-    if (!providerLocked) {
-      setComposerModelOptions(modelOptions)
-    }
+    setChatComposerModelOptions(composerChatId, modelOptions)
   }
 
   function setEffectivePlanMode(planMode: boolean) {
-    const nextState = resolvePlanModeState({
-      providerLocked,
-      planMode,
-      selectedProvider,
-      composerState,
-      providerDefaults,
-      lockedComposerState,
-    })
-
-    if (nextState.lockedComposerState !== lockedComposerState) {
-      setLockedComposerState(nextState.lockedComposerState)
-    }
-    if (nextState.composerPlanMode !== composerState.planMode) {
-      setComposerPlanMode(nextState.composerPlanMode)
-    }
+    setChatComposerPlanMode(composerChatId, planMode)
   }
 
   function toggleEffectivePlanMode() {
@@ -499,6 +514,17 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     }
   }
 
+  function handlePaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const files = getClipboardImageFiles(event.clipboardData.items, Date.now())
+    if (files.length === 0) return
+
+    enqueueFiles(files)
+
+    if (!hasClipboardTextPayload(event.clipboardData)) {
+      event.preventDefault()
+    }
+  }
+
   function handleAttachmentPreview(attachment: ComposerAttachment) {
     const target = classifyAttachmentPreview(attachment)
     if (target.openInNewTab) {
@@ -615,6 +641,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 if (chatId) setDraft(chatId, event.target.value)
                 autoResize()
               }}
+              onPaste={handlePaste}
               onKeyDown={handleKeyDown}
               disabled={disabled || missingVisionApiKey}
               className="flex-1 text-base p-3 md:p-4 !pr-2 pl-0 md:pl-2 resize-none max-h-[200px] outline-none bg-transparent border-0 shadow-none"
@@ -663,20 +690,9 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
               modelOptions={providerPrefs.modelOptions}
               onProviderChange={(provider) => {
                 if (providerLocked) return
-                resetComposerFromProvider(provider)
+                resetChatComposerFromProvider(composerChatId, provider)
               }}
-              onModelChange={(_, model) => {
-                if (providerLocked) {
-                  setLockedComposerState((current) => {
-                    const next = current ?? createLockedComposerState(selectedProvider, composerState, providerDefaults)
-                    return { ...next, model }
-                  })
-                  setVisionModelPreference(model)
-                  return
-                }
-
-                setVisionModelPreference(model)
-              }}
+              onModelChange={(_, model) => setChatComposerModel(composerChatId, model)}
               onVisionContinualLearningChange={(continualLearning) => {
                 setVisionModelOptions({ continualLearning })
               }}

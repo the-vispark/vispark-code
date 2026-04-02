@@ -11,6 +11,7 @@ export interface ChatRecord {
   createdAt: number
   updatedAt: number
   deletedAt?: number
+  unread: boolean
   provider: AgentProvider | null
   planMode: boolean
   sessionToken: string | null
@@ -82,6 +83,13 @@ export type ChatEvent =
       timestamp: number
       chatId: string
       planMode: boolean
+    }
+  | {
+      v: 2
+      type: "chat_read_state_set"
+      timestamp: number
+      chatId: string
+      unread: boolean
     }
 
 export type MessageEvent = {

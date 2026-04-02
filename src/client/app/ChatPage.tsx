@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import { ArrowDown, Upload } from "lucide-react"
 import { useOutletContext } from "react-router-dom"
-import type { KeybindingsSnapshot } from "../../shared/types"
+import type { HydratedTranscriptMessage, KeybindingsSnapshot } from "../../shared/types"
 import { ChatInput, type ChatInputHandle } from "../components/chat-ui/ChatInput"
 import { ChatNavbar } from "../components/chat-ui/ChatNavbar"
 import { RightSidebar } from "../components/chat-ui/RightSidebar"
@@ -18,6 +18,7 @@ import {
   RIGHT_SIDEBAR_MIN_SIZE_PERCENT,
   useRightSidebarStore,
 } from "../stores/rightSidebarStore"
+import { useChatPreferencesStore } from "../stores/chatPreferencesStore"
 import { DEFAULT_PROJECT_TERMINAL_LAYOUT, useTerminalLayoutStore } from "../stores/terminalLayoutStore"
 import { useTerminalPreferencesStore } from "../stores/terminalPreferencesStore"
 import { shouldCloseTerminalPane } from "./terminalLayoutResize"
@@ -36,6 +37,61 @@ const EMPTY_STATE_TEXT = "What are we building ?"
 const EMPTY_STATE_TYPING_INTERVAL_MS = 19
 const CHAT_NAVBAR_OFFSET_PX = 72
 const SCROLL_BUTTON_BOTTOM_PX = 120
+const TRANSCRIPT_TOC_BREAKPOINT_PX = 1200
+
+export interface TranscriptTocItem {
+  id: string
+  label: string
+  order: number
+}
+
+export function getTranscriptTocLabel(content: string) {
+  const firstLine = content
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .find((line) => line.length > 0)
+
+  return firstLine ?? "(attachment only)"
+}
+
+export function createTranscriptTocItems(messages: HydratedTranscriptMessage[]): TranscriptTocItem[] {
+  let order = 0
+
+  return messages.flatMap((message) => {
+    if (message.kind !== "user_prompt" || message.hidden) {
+      return []
+    }
+
+    order += 1
+    return [{
+      id: message.id,
+      label: getTranscriptTocLabel(message.content),
+      order,
+    }]
+  })
+}
+
+export function shouldShowTranscriptTocPanel(args: {
+  enabled: boolean
+  layoutWidth: number
+  itemCount: number
+}) {
+  return args.enabled && args.layoutWidth > TRANSCRIPT_TOC_BREAKPOINT_PX && args.itemCount > 0
+}
+
+export function scrollTranscriptMessageIntoView(
+  container: Pick<HTMLElement, "getBoundingClientRect" | "scrollTop" | "scrollTo">,
+  target: Pick<HTMLElement, "getBoundingClientRect">
+) {
+  const containerRect = container.getBoundingClientRect()
+  const targetRect = target.getBoundingClientRect()
+  const top = container.scrollTop + targetRect.top - containerRect.top - CHAT_NAVBAR_OFFSET_PX
+
+  container.scrollTo({
+    top: Math.max(0, top),
+    behavior: "smooth",
+  })
+}
 
 export function resolveChatPageKeybindingAction(
   snapshot: KeybindingsSnapshot | null,
@@ -63,6 +119,7 @@ export function ChatPage() {
   const [isEmptyStateTypingComplete, setIsEmptyStateTypingComplete] = useState(false)
   const [fixedTerminalHeight, setFixedTerminalHeight] = useState(0)
   const [isPageFileDragActive, setIsPageFileDragActive] = useState(false)
+  const [layoutWidth, setLayoutWidth] = useState(0)
   const pageFileDragDepthRef = useRef(0)
   const projectId = state.runtime?.projectId ?? null
   const projectTerminalLayout = useTerminalLayoutStore((store) => (projectId ? store.projects[projectId] : undefined))
@@ -79,6 +136,13 @@ export function ChatPage() {
   const setRightSidebarSize = useRightSidebarStore((store) => store.setSize)
   const scrollback = useTerminalPreferencesStore((store) => store.scrollbackLines)
   const minColumnWidth = useTerminalPreferencesStore((store) => store.minColumnWidth)
+  const showTranscriptToc = useChatPreferencesStore((store) => store.showTranscriptToc)
+  const transcriptTocItems = useMemo(() => createTranscriptTocItems(state.messages), [state.messages])
+  const shouldShowTranscriptToc = shouldShowTranscriptTocPanel({
+    enabled: showTranscriptToc,
+    layoutWidth,
+    itemCount: transcriptTocItems.length,
+  })
 
   const hasTerminals = terminalLayout.terminals.length > 0
   const showTerminalPane = Boolean(projectId && terminalLayout.isVisible && hasTerminals)
@@ -248,9 +312,16 @@ export function ChatPage() {
 
   useEffect(() => {
     const element = layoutRootRef.current
-    if (!element || !shouldRenderTerminalLayout) return
+    if (!element) return
 
     const updateHeight = () => {
+      const containerWidth = element.getBoundingClientRect().width
+      setLayoutWidth((current) => (Math.abs(current - containerWidth) < 1 ? current : containerWidth))
+
+      if (!shouldRenderTerminalLayout) {
+        return
+      }
+
       const containerHeight = element.getBoundingClientRect().height
       if (containerHeight <= 0) return
       const nextHeight = containerHeight * (terminalLayout.mainSizes[1] / 100)
@@ -358,6 +429,34 @@ export function ChatPage() {
             </>
           ) : null}
         </ScrollArea>
+
+        {shouldShowTranscriptToc ? (
+          <div
+            className="absolute right-4 z-20"
+            style={{ top: CHAT_NAVBAR_OFFSET_PX }}
+          >
+            <div className="rounded-2xl border border-border bg-background/90 px-1 py-1 backdrop-blur-md" data-testid="transcript-toc">
+              <div className="flex flex-col items-end gap-[1px]">
+                {transcriptTocItems.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className="flex max-w-[175px] items-center justify-end gap-1 rounded-xl px-2 py-1 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                    onClick={() => {
+                      const container = state.scrollRef.current
+                      const target = document.getElementById(`msg-${item.id}`)
+                      if (!container || !target) return
+                      scrollTranscriptMessageIntoView(container, target)
+                    }}
+                    title={item.label}
+                  >
+                    <span className="min-w-0 truncate">{item.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         {state.messages.length === 0 ? (
           <div

@@ -19,6 +19,7 @@ describe("read models", () => {
       title: "Chat",
       createdAt: 1,
       updatedAt: 1,
+      unread: true,
       provider: "vision",
       planMode: false,
       sessionToken: "thread-1",
@@ -28,6 +29,7 @@ describe("read models", () => {
 
     const sidebar = deriveSidebarData(state, new Map())
     expect(sidebar.projectGroups[0]?.chats[0]?.provider).toBe("vision")
+    expect(sidebar.projectGroups[0]?.chats[0]?.unread).toBe(true)
   })
 
   test("includes the Vision provider in chat snapshots", () => {
@@ -46,6 +48,7 @@ describe("read models", () => {
       title: "Chat",
       createdAt: 1,
       updatedAt: 1,
+      unread: false,
       provider: "vision",
       planMode: true,
       sessionToken: "session-1",
@@ -80,6 +83,7 @@ describe("read models", () => {
       title: "Chat",
       createdAt: 1,
       updatedAt: 75,
+      unread: false,
       provider: "vision",
       planMode: false,
       sessionToken: null,

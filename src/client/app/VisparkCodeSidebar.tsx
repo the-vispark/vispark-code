@@ -2,11 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Loader2, Menu, PanelLeft, Plus, Settings, X } from "lucide-react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { APP_NAME } from "../../shared/branding"
-import type { SidebarChatRow, SidebarData, UpdateSnapshot } from "../../shared/types"
+import type { KeybindingsSnapshot, SidebarChatRow, SidebarData, UpdateSnapshot } from "../../shared/types"
 import { ChatRow } from "../components/chat-ui/sidebar/ChatRow"
 import { LocalProjectsSection } from "../components/chat-ui/sidebar/LocalProjectsSection"
 import { Button } from "../components/ui/button"
 import { useProjectGroupOrderStore } from "../stores/projectGroupOrderStore"
+import { getResolvedKeybindings } from "../lib/keybindings"
 import { cn } from "../lib/utils"
 import type { SocketStatus } from "./socket"
 
@@ -28,7 +29,11 @@ interface VisparkCodeSidebarProps {
   onExpand: () => void
   onCreateChat: (projectId: string) => void
   onDeleteChat: (chat: SidebarChatRow) => void
+  onCopyPath: (localPath: string) => void
+  onOpenExternalPath: (action: "open_finder" | "open_editor", localPath: string) => void
   onRemoveProject: (projectId: string) => void
+  editorLabel: string
+  keybindings: KeybindingsSnapshot | null
   updateSnapshot: UpdateSnapshot | null
   onInstallUpdate: () => void
 }
@@ -47,7 +52,11 @@ export function VisparkCodeSidebar({
   onExpand,
   onCreateChat,
   onDeleteChat,
+  onCopyPath,
+  onOpenExternalPath,
   onRemoveProject,
+  editorLabel,
+  keybindings,
   updateSnapshot,
   onInstallUpdate,
 }: VisparkCodeSidebarProps) {
@@ -61,6 +70,7 @@ export function VisparkCodeSidebar({
 
   const savedOrder = useProjectGroupOrderStore((store) => store.order)
   const setGroupOrder = useProjectGroupOrderStore((store) => store.setOrder)
+  const resolvedKeybindings = useMemo(() => getResolvedKeybindings(keybindings), [keybindings])
 
   const orderedProjectGroups = useMemo(() => {
     if (savedOrder.length === 0) return data.projectGroups
@@ -303,6 +313,9 @@ export function VisparkCodeSidebar({
 
             <LocalProjectsSection
               projectGroups={orderedProjectGroups}
+              editorLabel={editorLabel}
+              finderShortcut={resolvedKeybindings.bindings.openInFinder}
+              editorShortcut={resolvedKeybindings.bindings.openInEditor}
               onReorderGroups={handleReorderGroups}
               collapsedSections={collapsedSections}
               expandedGroups={expandedGroups}
@@ -316,6 +329,8 @@ export function VisparkCodeSidebar({
                   onCreateChat(projectId)
                 }
               }}
+              onCopyPath={onCopyPath}
+              onOpenExternalPath={onOpenExternalPath}
               onRemoveProject={onRemoveProject}
               isConnected={connectionStatus === "connected"}
             />
