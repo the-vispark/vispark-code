@@ -112,7 +112,6 @@ function VisparkCodeLayout() {
           void state.handleRemoveProject(projectId)
         }}
         editorLabel={state.editorLabel}
-        keybindings={state.keybindings}
         updateSnapshot={state.updateSnapshot}
         onInstallUpdate={() => {
           void state.handleInstallUpdate()

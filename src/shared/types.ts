@@ -531,6 +531,7 @@ export interface ChatRuntime {
   title: string
   status: VisparkCodeStatus
   lastError: string | null
+  isDraining: boolean
   provider: AgentProvider | null
   planMode: boolean
   sessionToken: string | null

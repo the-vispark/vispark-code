@@ -392,6 +392,7 @@ export class AgentCoordinator {
   private readonly generateTitle: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   private reportBackgroundError: ((message: string) => void) | null = null
   readonly activeTurns = new Map<string, ActiveTurn>()
+  readonly drainingStreams = new Map<string, { turn: HarnessTurn }>()
 
   constructor(args: AgentCoordinatorArgs) {
     this.store = args.store
@@ -415,6 +416,23 @@ export class AgentCoordinator {
     const pending = this.activeTurns.get(chatId)?.pendingTool
     if (!pending) return null
     return { toolUseId: pending.toolUseId, toolKind: pending.tool.toolKind }
+  }
+
+  getDrainingChatIds(): Set<string> {
+    return new Set(this.drainingStreams.keys())
+  }
+
+  async stopDraining(chatId: string) {
+    const draining = this.drainingStreams.get(chatId)
+    if (!draining) return
+    draining.turn.close()
+    this.drainingStreams.delete(chatId)
+    this.onStateChange()
+  }
+
+  async closeChat(chatId: string) {
+    await this.stopDraining(chatId)
+    this.onStateChange()
   }
 
   private resolveProvider() {
@@ -443,6 +461,12 @@ export class AgentCoordinator {
     continualLearning: boolean
     appendUserPrompt: boolean
   }) {
+    const draining = this.drainingStreams.get(args.chatId)
+    if (draining) {
+      draining.turn.close()
+      this.drainingStreams.delete(args.chatId)
+    }
+
     const chat = this.store.requireChat(args.chatId)
     if (this.activeTurns.has(args.chatId)) {
       throw new Error("Chat is already running")
@@ -583,7 +607,7 @@ export class AgentCoordinator {
   private async runTurn(active: ActiveTurn) {
     try {
       for await (const event of active.turn.stream) {
-        if (!this.store.getChat(active.chatId)) {
+        if (active.cancelRequested || !this.store.getChat(active.chatId)) {
           break
         }
 
@@ -607,6 +631,8 @@ export class AgentCoordinator {
           } else if (!active.cancelRequested) {
             await this.store.recordTurnFinished(active.chatId)
           }
+          this.activeTurns.delete(active.chatId)
+          this.drainingStreams.set(active.chatId, { turn: active.turn })
         }
 
         this.onStateChange()
@@ -639,15 +665,25 @@ export class AgentCoordinator {
         }
       }
       active.turn.close()
-      this.activeTurns.delete(active.chatId)
+      if (this.activeTurns.get(active.chatId) === active) {
+        this.activeTurns.delete(active.chatId)
+      }
+      this.drainingStreams.delete(active.chatId)
       this.onStateChange()
     }
   }
 
   async cancel(chatId: string) {
+    const draining = this.drainingStreams.get(chatId)
+    if (draining) {
+      draining.turn.close()
+      this.drainingStreams.delete(chatId)
+    }
+
     const active = this.activeTurns.get(chatId)
     if (!active) return
 
+    if (active.cancelRequested) return
     active.cancelRequested = true
 
     const pendingTool = active.pendingTool
@@ -682,14 +718,18 @@ export class AgentCoordinator {
     active.cancelRecorded = true
     active.hasFinalResult = true
 
-    try {
-      await active.turn.interrupt()
-    } catch {
-      active.turn.close()
-    }
-
     this.activeTurns.delete(chatId)
     this.onStateChange()
+
+    try {
+      await Promise.race([
+        active.turn.interrupt(),
+        new Promise((resolve) => setTimeout(resolve, 5_000)),
+      ])
+    } catch {
+      // Fall through to force-close below.
+    }
+    active.turn.close()
   }
 
   async respondTool(command: Extract<ClientCommand, { type: "chat.respondTool" }>) {

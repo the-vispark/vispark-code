@@ -56,9 +56,10 @@ describe("read models", () => {
       lastTurnOutcome: null,
     })
 
-    const chat = deriveChatSnapshot(state, new Map(), "chat-1")
+    const chat = deriveChatSnapshot(state, new Map(), new Set(["chat-1"]), "chat-1")
     expect(chat?.runtime.provider).toBe("vision")
     expect(chat?.runtime.lastError).toBe("Invalid API key")
+    expect(chat?.runtime.isDraining).toBe(true)
     expect(chat?.availableProviders).toEqual([
       expect.objectContaining({
         id: "vision",
