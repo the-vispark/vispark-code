@@ -399,6 +399,7 @@ export interface ContextWindowUsageSnapshot {
 export interface ChatDiffFile {
   path: string
   changeType: "added" | "deleted" | "modified" | "renamed"
+  isUntracked: boolean
   patch: string
   mimeType?: string
   size?: number
