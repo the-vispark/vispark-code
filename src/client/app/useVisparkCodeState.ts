@@ -1,7 +1,7 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react"
 import { useNavigate } from "react-router-dom"
 import { APP_NAME } from "../../shared/branding"
-import { DEFAULT_VISION_MODEL_OPTIONS, PROVIDERS, type AgentProvider, type AppSettingsSnapshot, type AskUserQuestionAnswerMap, type KeybindingsSnapshot, type ModelOptions, type ProviderCatalogEntry, type UpdateInstallResult, type UpdateSnapshot } from "../../shared/types"
+import { DEFAULT_VISION_MODEL_OPTIONS, PROVIDERS, type AgentProvider, type AppSettingsSnapshot, type AskUserQuestionAnswerMap, type ChatHistoryPage, type KeybindingsSnapshot, type ModelOptions, type ProviderCatalogEntry, type TranscriptEntry, type UpdateInstallResult, type UpdateSnapshot } from "../../shared/types"
 import { NEW_CHAT_COMPOSER_ID, type ComposerState, useChatPreferencesStore } from "../stores/chatPreferencesStore"
 import { useRightSidebarStore } from "../stores/rightSidebarStore"
 import { useTerminalLayoutStore } from "../stores/terminalLayoutStore"
@@ -12,6 +12,94 @@ import { useAppDialog } from "../components/ui/app-dialog"
 import { processTranscriptMessages } from "../lib/parseTranscript"
 import { canCancelStatus, getLatestToolIds, isProcessingStatus } from "./derived"
 import { VisparkCodeSocket, type SocketStatus } from "./socket"
+
+function sameRuntime(left: ChatSnapshot["runtime"] | null | undefined, right: ChatSnapshot["runtime"] | null | undefined) {
+  if (left === right) return true
+  if (!left || !right) return false
+  return left.chatId === right.chatId
+    && left.projectId === right.projectId
+    && left.localPath === right.localPath
+    && left.title === right.title
+    && left.status === right.status
+    && left.isDraining === right.isDraining
+    && left.provider === right.provider
+    && left.planMode === right.planMode
+    && left.sessionToken === right.sessionToken
+}
+
+function sameTranscriptEntries(left: ChatSnapshot["messages"] | null | undefined, right: ChatSnapshot["messages"] | null | undefined) {
+  if (left === right) return true
+  if (!left || !right) return false
+  if (left.length !== right.length) return false
+  return left.every((entry, index) => entry._id === right[index]?._id)
+}
+
+function sameProviders(left: ProviderCatalogEntry[] | null | undefined, right: ProviderCatalogEntry[] | null | undefined) {
+  if (left === right) return true
+  if (!left || !right) return false
+  if (left.length !== right.length) return false
+  return left.every((provider, index) => provider.id === right[index]?.id)
+}
+
+function sameHistory(left: ChatSnapshot["history"] | null | undefined, right: ChatSnapshot["history"] | null | undefined) {
+  if (left === right) return true
+  if (!left || !right) return false
+  return left.hasOlder === right.hasOlder
+    && left.olderCursor === right.olderCursor
+    && left.recentLimit === right.recentLimit
+}
+
+function sameDiffs(left: ChatSnapshot["diffs"] | null | undefined, right: ChatSnapshot["diffs"] | null | undefined) {
+  if (left === right) return true
+  if (!left || !right) return false
+  if (left.status !== right.status) return false
+  if (left.branchName !== right.branchName) return false
+  if (left.hasUpstream !== right.hasUpstream) return false
+  if (left.files.length !== right.files.length) return false
+  return left.files.every((file, index) => {
+    const other = right.files[index]
+    return Boolean(other)
+      && file.path === other.path
+      && file.changeType === other.changeType
+      && file.patch === other.patch
+  })
+}
+
+function shouldPreserveExistingProjectDiffs(
+  current: ChatSnapshot["diffs"] | null | undefined,
+  next: ChatSnapshot["diffs"] | null | undefined
+) {
+  return Boolean(
+    current
+    && current.status !== "unknown"
+    && next
+    && next.status === "unknown"
+    && next.files.length === 0
+  )
+}
+
+function sameChatSnapshotCore(left: ChatSnapshot | null, right: ChatSnapshot | null) {
+  if (left === right) return true
+  if (!left || !right) return false
+  return sameRuntime(left.runtime, right.runtime)
+    && sameTranscriptEntries(left.messages, right.messages)
+    && sameHistory(left.history, right.history)
+    && sameProviders(left.availableProviders, right.availableProviders)
+}
+
+function mergeTranscriptEntries(olderHistoryEntries: TranscriptEntry[], recentEntries: TranscriptEntry[]) {
+  const deduped = new Map<string, TranscriptEntry>()
+  for (const entry of olderHistoryEntries) {
+    deduped.set(entry._id, entry)
+  }
+  for (const entry of recentEntries) {
+    deduped.set(entry._id, entry)
+  }
+  return [...deduped.values()]
+}
+
+const INITIAL_CHAT_RECENT_LIMIT = 200
+const CHAT_HISTORY_PAGE_SIZE = 500
 
 export function getNewestRemainingChatId(projectGroups: SidebarData["projectGroups"], activeChatId: string): string | null {
   const projectGroup = projectGroups.find((group) => group.chats.some((chat) => chat.chatId === activeChatId))
@@ -72,6 +160,11 @@ function composerStateFromSendOptions(options?: {
     },
     planMode: Boolean(options.planMode),
   }
+}
+
+function getProjectIdForChat(projectGroups: SidebarData["projectGroups"], chatId: string | null) {
+  if (!chatId) return null
+  return projectGroups.find((group) => group.chats.some((chat) => chat.chatId === chatId))?.groupKey ?? null
 }
 
 export function shouldAutoFollowTranscript(distanceFromBottom: number) {
@@ -153,10 +246,12 @@ export function getActiveChatSnapshot(chatSnapshot: ChatSnapshot | null, activeC
 export interface VisparkCodeState {
   socket: VisparkCodeSocket
   activeChatId: string | null
+  activeProjectId: string | null
   sidebarData: SidebarData
   localProjects: LocalProjectsSnapshot | null
   updateSnapshot: UpdateSnapshot | null
   chatSnapshot: ChatSnapshot | null
+  chatDiffSnapshot: ChatSnapshot["diffs"] | null
   keybindings: KeybindingsSnapshot | null
   connectionStatus: SocketStatus
   sidebarReady: boolean
@@ -172,6 +267,8 @@ export interface VisparkCodeState {
   messages: ReturnType<typeof processTranscriptMessages>
   latestToolIds: ReturnType<typeof getLatestToolIds>
   runtime: ChatSnapshot["runtime"] | null
+  isHistoryLoading: boolean
+  hasOlderHistory: boolean
   availableProviders: ProviderCatalogEntry[]
   isProcessing: boolean
   canCancel: boolean
@@ -187,6 +284,7 @@ export interface VisparkCodeState {
   expandSidebar: () => void
   updateScrollState: () => void
   scrollToBottom: () => void
+  loadOlderHistory: () => Promise<void>
   handleCreateChat: (projectId: string) => Promise<void>
   handleOpenLocalProject: (localPath: string) => Promise<void>
   handleCreateProject: (project: ProjectRequest) => Promise<void>
@@ -225,6 +323,11 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
   const [localProjects, setLocalProjects] = useState<LocalProjectsSnapshot | null>(null)
   const [updateSnapshot, setUpdateSnapshot] = useState<UpdateSnapshot | null>(null)
   const [chatSnapshot, setChatSnapshot] = useState<ChatSnapshot | null>(null)
+  const [olderHistoryEntries, setOlderHistoryEntries] = useState<TranscriptEntry[]>([])
+  const [isHistoryLoading, setIsHistoryLoading] = useState(false)
+  const [historyCursor, setHistoryCursor] = useState<string | null>(null)
+  const [hasOlderHistory, setHasOlderHistory] = useState(false)
+  const [projectDiffSnapshots, setProjectDiffSnapshots] = useState<Record<string, ChatSnapshot["diffs"] | null>>({})
   const [keybindings, setKeybindings] = useState<KeybindingsSnapshot | null>(null)
   const [appSettings, setAppSettings] = useState<AppSettingsSnapshot | null>(null)
   const [connectionStatus, setConnectionStatus] = useState<SocketStatus>("connecting")
@@ -241,6 +344,11 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
   const [startingLocalPath, setStartingLocalPath] = useState<string | null>(null)
   const [pendingChatId, setPendingChatId] = useState<string | null>(null)
   const [focusEpoch, setFocusEpoch] = useState(0)
+  const chatSubscriptionDebugRef = useRef(0)
+  const lastActiveProjectDiffRef = useRef<{ projectId: string | null; diffs: ChatSnapshot["diffs"] | null }>({
+    projectId: null,
+    diffs: null,
+  })
   const editorLabel = getEditorPresetLabel(useTerminalPreferencesStore((store) => store.editorPreset))
   const transcriptAutoScroll = useChatPreferencesStore((store) => store.transcriptAutoScroll)
 
@@ -346,20 +454,80 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
       return
     }
 
-    logVisparkCodeState("subscribing to chat", { activeChatId })
+    const subscriptionId = ++chatSubscriptionDebugRef.current
+    logVisparkCodeState("subscribing to chat", {
+      subscriptionId,
+      activeChatId,
+      sidebarProjectGroups: sidebarData.projectGroups.length,
+      sidebarChatCount: sidebarData.projectGroups.reduce((count, group) => count + group.chats.length, 0),
+    })
     setChatSnapshot(null)
     setChatReady(false)
-    return socket.subscribe<ChatSnapshot | null>({ type: "chat", chatId: activeChatId }, (snapshot) => {
-      logVisparkCodeState("chat snapshot received", {
-        activeChatId,
-        snapshotChatId: snapshot?.runtime.chatId ?? null,
-        snapshotProvider: snapshot?.runtime.provider ?? null,
-        snapshotStatus: snapshot?.runtime.status ?? null,
+    const unsubscribe = socket.subscribe<ChatSnapshot | null>({ type: "chat", chatId: activeChatId, recentLimit: INITIAL_CHAT_RECENT_LIMIT }, (snapshot) => {
+      setChatSnapshot((current) => {
+        const reused = sameChatSnapshotCore(current, snapshot)
+        logVisparkCodeState("chat snapshot received", {
+          subscriptionId,
+          activeChatId,
+          snapshotChatId: snapshot?.runtime.chatId ?? null,
+          snapshotProvider: snapshot?.runtime.provider ?? null,
+          snapshotStatus: snapshot?.runtime.status ?? null,
+          messageCount: snapshot?.messages.length ?? 0,
+          diffStatus: snapshot?.diffs?.status ?? null,
+          diffFileCount: snapshot?.diffs?.files.length ?? 0,
+          reusedSnapshot: reused,
+        })
+        return reused ? current : snapshot
       })
-      setChatSnapshot(snapshot)
+      setHistoryCursor(snapshot?.history.olderCursor ?? null)
+      setHasOlderHistory(snapshot?.history.hasOlder ?? false)
+      if (snapshot?.runtime.projectId) {
+        setProjectDiffSnapshots((current) => {
+          const projectId = snapshot.runtime.projectId
+          const nextDiffs = snapshot.diffs ?? null
+          if (shouldPreserveExistingProjectDiffs(current[projectId] ?? null, nextDiffs)) {
+            logVisparkCodeState("preserving previous project diffs", {
+              subscriptionId,
+              projectId,
+              nextStatus: nextDiffs?.status ?? null,
+              nextFiles: nextDiffs?.files.length ?? 0,
+            })
+            return current
+          }
+          if (sameDiffs(current[projectId] ?? null, nextDiffs)) {
+            logVisparkCodeState("project diffs unchanged", {
+              subscriptionId,
+              projectId,
+              status: nextDiffs?.status ?? null,
+              files: nextDiffs?.files.length ?? 0,
+            })
+            return current
+          }
+          logVisparkCodeState("project diffs updated", {
+            subscriptionId,
+            projectId,
+            previousStatus: current[projectId]?.status ?? null,
+            previousFiles: current[projectId]?.files.length ?? 0,
+            nextStatus: nextDiffs?.status ?? null,
+            nextFiles: nextDiffs?.files.length ?? 0,
+          })
+          return {
+            ...current,
+            [projectId]: nextDiffs,
+          }
+        })
+      }
       setChatReady(true)
       setCommandError(null)
     })
+    return () => {
+      logVisparkCodeState("unsubscribing from chat", {
+        subscriptionId,
+        activeChatId,
+        sidebarProjectGroups: sidebarData.projectGroups.length,
+      })
+      unsubscribe()
+    }
   }, [activeChatId, socket])
 
   useEffect(() => {
@@ -416,6 +584,10 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
       initialScrollFrameRef.current = null
     }
     setIsAtBottom(true)
+    setOlderHistoryEntries([])
+    setIsHistoryLoading(false)
+    setHistoryCursor(null)
+    setHasOlderHistory(false)
   }, [activeChatId])
 
   useEffect(() => {
@@ -442,6 +614,28 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     () => getActiveChatSnapshot(chatSnapshot, activeChatId),
     [activeChatId, chatSnapshot]
   )
+  const activeProjectId = useMemo(
+    () => activeChatSnapshot?.runtime.projectId
+      ?? getProjectIdForChat(sidebarData.projectGroups, activeChatId)
+      ?? selectedProjectId,
+    [activeChatId, activeChatSnapshot?.runtime.projectId, selectedProjectId, sidebarData.projectGroups]
+  )
+  const chatDiffSnapshot = useMemo(() => {
+    const currentDiffs = activeProjectId ? (projectDiffSnapshots[activeProjectId] ?? null) : null
+    if (activeProjectId && currentDiffs) {
+      lastActiveProjectDiffRef.current = {
+        projectId: activeProjectId,
+        diffs: currentDiffs,
+      }
+      return currentDiffs
+    }
+
+    if (activeProjectId && lastActiveProjectDiffRef.current.projectId === activeProjectId) {
+      return lastActiveProjectDiffRef.current.diffs
+    }
+
+    return currentDiffs
+  }, [activeProjectId, projectDiffSnapshots])
   useEffect(() => {
     logVisparkCodeState("active snapshot resolved", {
       routeChatId: activeChatId,
@@ -452,7 +646,11 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
       pendingChatId,
     })
   }, [activeChatId, activeChatSnapshot, chatSnapshot, pendingChatId])
-  const messages = useMemo(() => processTranscriptMessages(activeChatSnapshot?.messages ?? []), [activeChatSnapshot?.messages])
+  const transcriptEntries = useMemo(
+    () => mergeTranscriptEntries(olderHistoryEntries, activeChatSnapshot?.messages ?? []),
+    [activeChatSnapshot?.messages, olderHistoryEntries]
+  )
+  const messages = useMemo(() => processTranscriptMessages(transcriptEntries), [transcriptEntries])
   const latestToolIds = useMemo(() => getLatestToolIds(messages), [messages])
   const runtime = activeChatSnapshot?.runtime ?? null
   const availableProviders = activeChatSnapshot?.availableProviders ?? PROVIDERS
@@ -514,25 +712,50 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     return () => window.cancelAnimationFrame(frameId)
   }, [activeChatId, inputHeight, isAtBottom, messages.length, runtime?.status, transcriptAutoScroll])
 
-  function updateScrollState() {
+  const updateScrollState = useCallback(() => {
     const element = scrollRef.current
     if (!element) return
     const distance = element.scrollHeight - element.scrollTop - element.clientHeight
     setIsAtBottom(shouldAutoFollowTranscript(distance))
-  }
+  }, [])
 
-  function enableAutoFollow(behavior: ScrollBehavior) {
+  const enableAutoFollow = useCallback((behavior: ScrollBehavior) => {
     const element = scrollRef.current
     setIsAtBottom(true)
     if (!element) return
     element.scrollTo({ top: element.scrollHeight, behavior })
-  }
+  }, [])
 
-  function scrollToBottom() {
+  const scrollToBottom = useCallback(() => {
     enableAutoFollow("smooth")
-  }
+  }, [enableAutoFollow])
 
-  async function createChatForProject(projectId: string) {
+  const loadOlderHistory = useCallback(async () => {
+    if (!activeChatId || !historyCursor || isHistoryLoading || !hasOlderHistory) {
+      return
+    }
+
+    setIsHistoryLoading(true)
+    try {
+      const page = await socket.command<ChatHistoryPage>({
+        type: "chat.loadHistory",
+        chatId: activeChatId,
+        beforeCursor: historyCursor,
+        limit: CHAT_HISTORY_PAGE_SIZE,
+      })
+      setOlderHistoryEntries((current) => mergeTranscriptEntries(page.messages, current))
+      setHistoryCursor(page.olderCursor)
+      setHasOlderHistory(page.hasOlder)
+      setCommandError(null)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setCommandError(message)
+    } finally {
+      setIsHistoryLoading(false)
+    }
+  }, [activeChatId, hasOlderHistory, historyCursor, isHistoryLoading, socket])
+
+  const createChatForProject = useCallback(async (projectId: string) => {
     const chatPreferences = useChatPreferencesStore.getState()
     const sourceComposerState = activeChatId
       ? chatPreferences.getComposerState(activeChatId)
@@ -544,9 +767,9 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     navigate(`/chat/${result.chatId}`)
     setSidebarOpen(false)
     setCommandError(null)
-  }
+  }, [activeChatId, navigate, socket])
 
-  async function resolveProjectIdForStartChat(intent: StartChatIntent): Promise<{ projectId: string; localPath?: string }> {
+  const resolveProjectIdForStartChat = useCallback(async (intent: StartChatIntent): Promise<{ projectId: string; localPath?: string }> => {
     if (intent.kind === "project_id") {
       return { projectId: intent.projectId }
     }
@@ -562,9 +785,9 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
         : { type: "project.open", localPath: intent.project.localPath }
     )
     return { projectId: result.projectId, localPath: intent.project.localPath }
-  }
+  }, [socket])
 
-  async function startChatFromIntent(intent: StartChatIntent) {
+  const startChatFromIntent = useCallback(async (intent: StartChatIntent) => {
     try {
       const localPath = intent.kind === "project_id"
         ? null
@@ -582,19 +805,19 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     } finally {
       setStartingLocalPath(null)
     }
-  }
+  }, [createChatForProject, resolveProjectIdForStartChat])
 
-  async function handleCreateChat(projectId: string) {
+  const handleCreateChat = useCallback(async (projectId: string) => {
     await startChatFromIntent({ kind: "project_id", projectId })
-  }
+  }, [startChatFromIntent])
 
-  async function handleOpenLocalProject(localPath: string) {
+  const handleOpenLocalProject = useCallback(async (localPath: string) => {
     await startChatFromIntent({ kind: "local_path", localPath })
-  }
+  }, [startChatFromIntent])
 
-  async function handleCreateProject(project: ProjectRequest) {
+  const handleCreateProject = useCallback(async (project: ProjectRequest) => {
     await startChatFromIntent({ kind: "project_request", project })
-  }
+  }, [startChatFromIntent])
 
   async function handlePickDirectory(title = "Select Project Folder") {
     try {
@@ -607,16 +830,16 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     }
   }
 
-  async function handleCheckForUpdates(options?: { force?: boolean }) {
+  const handleCheckForUpdates = useCallback(async (options?: { force?: boolean }) => {
     try {
       await socket.command<UpdateSnapshot>({ type: "update.check", force: options?.force })
       setCommandError(null)
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
     }
-  }
+  }, [socket])
 
-  async function handleInstallUpdate() {
+  const handleInstallUpdate = useCallback(async () => {
     try {
       const result = await socket.command<UpdateInstallResult>({ type: "update.install" })
       if (!result.ok) {
@@ -643,12 +866,12 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
       clearUiUpdateRestartPhase()
       setCommandError(error instanceof Error ? error.message : String(error))
     }
-  }
+  }, [dialog, socket])
 
-  async function handleSend(
+  const handleSend = useCallback(async (
     content: string,
     options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; attachments?: import("../../shared/types").ChatAttachment[] }
-  ) {
+  ) => {
     try {
       let projectId = selectedProjectId ?? sidebarData.projectGroups[0]?.groupKey ?? null
       if (!activeChatId && !projectId && fallbackLocalProjectPath) {
@@ -692,27 +915,27 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
       setCommandError(error instanceof Error ? error.message : String(error))
       throw error
     }
-  }
+  }, [activeChatId, fallbackLocalProjectPath, navigate, selectedProjectId, sidebarData.projectGroups, socket])
 
-  async function handleCancel() {
+  const handleCancel = useCallback(async () => {
     if (!activeChatId) return
     try {
       await socket.command({ type: "chat.cancel", chatId: activeChatId })
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
     }
-  }
+  }, [activeChatId, socket])
 
-  async function handleStopDraining() {
+  const handleStopDraining = useCallback(async () => {
     if (!activeChatId) return
     try {
       await socket.command({ type: "chat.stopDraining", chatId: activeChatId })
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
     }
-  }
+  }, [activeChatId, socket])
 
-  async function handleDeleteChat(chat: SidebarChatRow) {
+  const handleDeleteChat = useCallback(async (chat: SidebarChatRow) => {
     const confirmed = await dialog.confirm({
       title: "Delete Chat",
       description: `Delete "${chat.title}"? This cannot be undone.`,
@@ -729,9 +952,9 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
     }
-  }
+  }, [activeChatId, dialog, navigate, sidebarData.projectGroups, socket])
 
-  async function handleRemoveProject(projectId: string) {
+  const handleRemoveProject = useCallback(async (projectId: string) => {
     const project = sidebarData.projectGroups.find((group) => group.groupKey === projectId)
     if (!project) return
     const projectName = project.localPath.split("/").filter(Boolean).pop() ?? project.localPath
@@ -754,63 +977,14 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
     }
-  }
+  }, [dialog, navigate, runtime?.projectId, sidebarData.projectGroups, socket])
 
-  async function handleCopyPath(localPath: string) {
-    try {
-      if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
-        throw new Error("Clipboard is not available")
-      }
-      await navigator.clipboard.writeText(localPath)
-      setCommandError(null)
-    } catch (error) {
-      setCommandError(error instanceof Error ? error.message : String(error))
-    }
-  }
-
-  async function handleOpenExternal(action: "open_finder" | "open_terminal" | "open_editor") {
-    const localPath = runtime?.localPath ?? localProjects?.projects[0]?.localPath ?? sidebarData.projectGroups[0]?.localPath
-    if (!localPath) return
-    try {
-      await openExternal({
-        action,
-        localPath,
-      })
-    } catch (error) {
-      setCommandError(error instanceof Error ? error.message : String(error))
-    }
-  }
-
-  async function handleOpenLocalLink(target: { path: string; line?: number; column?: number }) {
-    try {
-      await openExternal({
-        action: "open_editor",
-        localPath: target.path,
-        line: target.line,
-        column: target.column,
-      })
-    } catch (error) {
-      setCommandError(error instanceof Error ? error.message : String(error))
-    }
-  }
-
-  async function handleOpenExternalPath(action: "open_finder" | "open_editor", localPath: string) {
-    try {
-      await openExternal({
-        action,
-        localPath,
-      })
-    } catch (error) {
-      setCommandError(error instanceof Error ? error.message : String(error))
-    }
-  }
-
-  async function openExternal(command: {
+  const openExternal = useCallback(async (command: {
     action: "open_finder" | "open_terminal" | "open_editor"
     localPath: string
     line?: number
     column?: number
-  }) {
+  }) => {
     const preferences = useTerminalPreferencesStore.getState()
     setCommandError(null)
     await socket.command({
@@ -823,9 +997,58 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
           }
         : undefined,
     })
-  }
+  }, [socket])
 
-  function handleCompose() {
+  const handleOpenExternal = useCallback(async (action: "open_finder" | "open_terminal" | "open_editor") => {
+    const localPath = runtime?.localPath ?? localProjects?.projects[0]?.localPath ?? sidebarData.projectGroups[0]?.localPath
+    if (!localPath) return
+    try {
+      await openExternal({
+        action,
+        localPath,
+      })
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }, [localProjects?.projects, openExternal, runtime?.localPath, sidebarData.projectGroups])
+
+  const handleCopyPath = useCallback(async (localPath: string) => {
+    try {
+      if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+        throw new Error("Clipboard is not available")
+      }
+      await navigator.clipboard.writeText(localPath)
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }, [])
+
+  const handleOpenLocalLink = useCallback(async (target: { path: string; line?: number; column?: number }) => {
+    try {
+      await openExternal({
+        action: "open_editor",
+        localPath: target.path,
+        line: target.line,
+        column: target.column,
+      })
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }, [openExternal])
+
+  const handleOpenExternalPath = useCallback(async (action: "open_finder" | "open_editor", localPath: string) => {
+    try {
+      await openExternal({
+        action,
+        localPath,
+      })
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }, [openExternal])
+
+  const handleCompose = useCallback(() => {
     const intent = resolveComposeIntent({
       selectedProjectId,
       sidebarProjectId: sidebarData.projectGroups[0]?.groupKey,
@@ -837,13 +1060,18 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     }
 
     navigate("/")
-  }
+  }, [fallbackLocalProjectPath, navigate, selectedProjectId, sidebarData.projectGroups, startChatFromIntent])
 
-  async function handleAskUserQuestion(
+  const openSidebar = useCallback(() => setSidebarOpen(true), [])
+  const closeSidebar = useCallback(() => setSidebarOpen(false), [])
+  const collapseSidebar = useCallback(() => setSidebarCollapsed(true), [])
+  const expandSidebar = useCallback(() => setSidebarCollapsed(false), [])
+
+  const handleAskUserQuestion = useCallback(async (
     toolUseId: string,
     questions: AskUserQuestionItem[],
     answers: AskUserQuestionAnswerMap
-  ) {
+  ) => {
     if (!activeChatId) return
     try {
       await socket.command({
@@ -855,9 +1083,9 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
     }
-  }
+  }, [activeChatId, socket])
 
-  async function handleExitPlanMode(toolUseId: string, confirmed: boolean, clearContext?: boolean, message?: string) {
+  const handleExitPlanMode = useCallback(async (toolUseId: string, confirmed: boolean, clearContext?: boolean, message?: string) => {
     if (!activeChatId) return
     if (confirmed) {
       useChatPreferencesStore.getState().setChatComposerPlanMode(activeChatId, false)
@@ -876,15 +1104,17 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
     }
-  }
+  }, [activeChatId, socket])
 
   return {
     socket,
     activeChatId,
+    activeProjectId,
     sidebarData,
     localProjects,
     updateSnapshot,
     chatSnapshot,
+    chatDiffSnapshot,
     keybindings,
     connectionStatus,
     sidebarReady,
@@ -900,6 +1130,8 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     messages,
     latestToolIds,
     runtime,
+    isHistoryLoading,
+    hasOlderHistory,
     availableProviders,
     isProcessing,
     canCancel,
@@ -909,12 +1141,13 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     navbarLocalPath,
     editorLabel,
     hasSelectedProject,
-    openSidebar: () => setSidebarOpen(true),
-    closeSidebar: () => setSidebarOpen(false),
-    collapseSidebar: () => setSidebarCollapsed(true),
-    expandSidebar: () => setSidebarCollapsed(false),
+    openSidebar,
+    closeSidebar,
+    collapseSidebar,
+    expandSidebar,
     updateScrollState,
     scrollToBottom,
+    loadOlderHistory,
     handleCreateChat,
     handleOpenLocalProject,
     handleCreateProject,

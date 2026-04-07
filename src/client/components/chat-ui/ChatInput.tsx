@@ -9,6 +9,7 @@ import {
 } from "../../../shared/types"
 import { CHAT_INPUT_ATTRIBUTE, focusNextChatInput } from "../../app/chatFocusPolicy"
 import { useIsStandalone } from "../../hooks/useIsStandalone"
+import type { ContextWindowSnapshot } from "../../lib/contextWindow"
 import { cn } from "../../lib/utils"
 import { useChatInputStore } from "../../stores/chatInputStore"
 import { NEW_CHAT_COMPOSER_ID, type ComposerState, useChatPreferencesStore } from "../../stores/chatPreferencesStore"
@@ -19,6 +20,7 @@ import { Button } from "../ui/button"
 import { ScrollArea } from "../ui/scroll-area"
 import { Textarea } from "../ui/textarea"
 import { ChatPreferenceControls } from "./ChatPreferenceControls"
+import { ContextWindowMeter } from "./ContextWindowMeter"
 
 const MAX_FILES_PER_DROP = 10
 const MAX_CONCURRENT_UPLOADS = 3
@@ -104,6 +106,7 @@ interface Props {
   activeProvider: AgentProvider | null
   availableProviders: ProviderCatalogEntry[]
   missingVisionApiKey?: boolean
+  contextWindowSnapshot?: ContextWindowSnapshot | null
 }
 
 export interface ChatInputHandle {
@@ -170,6 +173,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   activeProvider,
   availableProviders,
   missingVisionApiKey = false,
+  contextWindowSnapshot = null,
 }, forwardedRef) {
   const {
     getDraft,
@@ -701,6 +705,11 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
               includePlanMode={showPlanMode}
               className="max-w-[840px] animate-fade-in"
             />
+            {contextWindowSnapshot ? (
+              <div className="ml-3 flex shrink-0 items-center">
+                <ContextWindowMeter usage={contextWindowSnapshot} />
+              </div>
+            ) : null}
           </div>
         </div>
       </div>

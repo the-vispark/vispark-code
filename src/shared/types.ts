@@ -378,6 +378,67 @@ export interface StatusEntry extends TranscriptEntryBase {
   status: string
 }
 
+export interface ContextWindowUsageSnapshot {
+  usedTokens: number
+  totalProcessedTokens?: number
+  maxTokens?: number
+  inputTokens?: number
+  cachedInputTokens?: number
+  outputTokens?: number
+  reasoningOutputTokens?: number
+  lastUsedTokens?: number
+  lastInputTokens?: number
+  lastCachedInputTokens?: number
+  lastOutputTokens?: number
+  lastReasoningOutputTokens?: number
+  toolUses?: number
+  durationMs?: number
+  compactsAutomatically: boolean
+}
+
+export interface ChatDiffFile {
+  path: string
+  changeType: "added" | "deleted" | "modified" | "renamed"
+  patch: string
+  mimeType?: string
+  size?: number
+}
+
+export interface ChatDiffSnapshot {
+  status: "unknown" | "ready" | "no_repo"
+  branchName?: string
+  hasUpstream?: boolean
+  files: ChatDiffFile[]
+}
+
+export type DiffCommitMode = "commit_and_push" | "commit_only"
+
+export interface DiffCommitSuccess {
+  ok: true
+  mode: DiffCommitMode
+  branchName?: string
+  pushed: boolean
+  snapshotChanged: boolean
+}
+
+export interface DiffCommitFailure {
+  ok: false
+  mode: DiffCommitMode
+  phase: "commit" | "push"
+  title: string
+  message: string
+  detail?: string
+  localCommitCreated?: boolean
+  snapshotChanged?: boolean
+}
+
+export type DiffCommitResult = DiffCommitSuccess | DiffCommitFailure
+
+export interface ContextWindowUpdatedEntry extends TranscriptEntryBase {
+  kind: "context_window_updated"
+  usage: ContextWindowUsageSnapshot
+}
+
 export interface CompactBoundaryEntry extends TranscriptEntryBase {
   kind: "compact_boundary"
 }
@@ -404,6 +465,7 @@ export type TranscriptEntry =
   | ToolResultEntry
   | ResultEntry
   | StatusEntry
+  | ContextWindowUpdatedEntry
   | CompactBoundaryEntry
   | CompactSummaryEntry
   | ContextClearedEntry
@@ -517,6 +579,7 @@ export type HydratedTranscriptMessage =
   | ({ kind: "assistant_text"; text: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "result"; success: boolean; cancelled?: boolean; result: string; durationMs: number; costUsd?: number; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "status"; status: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
+  | ({ kind: "context_window_updated"; usage: ContextWindowUsageSnapshot; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "compact_boundary"; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "compact_summary"; summary: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "context_cleared"; id: string; messageId?: string; timestamp: string; hidden?: boolean })
@@ -537,10 +600,24 @@ export interface ChatRuntime {
   sessionToken: string | null
 }
 
+export interface ChatHistorySnapshot {
+  hasOlder: boolean
+  olderCursor: string | null
+  recentLimit: number
+}
+
 export interface ChatSnapshot {
   runtime: ChatRuntime
   messages: TranscriptEntry[]
+  history: ChatHistorySnapshot
+  diffs: ChatDiffSnapshot
   availableProviders: ProviderCatalogEntry[]
+}
+
+export interface ChatHistoryPage {
+  messages: TranscriptEntry[]
+  hasOlder: boolean
+  olderCursor: string | null
 }
 
 export interface VisparkCodeSnapshot {

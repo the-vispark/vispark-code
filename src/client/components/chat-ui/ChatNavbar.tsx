@@ -1,4 +1,4 @@
-import { Code, FolderOpen, Menu, PanelLeft, PanelRight, SquarePen, Terminal } from "lucide-react"
+import { Code, FolderOpen, GitCompare, Menu, PanelLeft, SquarePen, Terminal } from "lucide-react"
 import { Button } from "../ui/button"
 import { CardHeader } from "../ui/card"
 import { HotkeyTooltip, HotkeyTooltipContent, HotkeyTooltipTrigger } from "../ui/tooltip"
@@ -117,7 +117,7 @@ export function ChatNavbar({
                       onClick={onToggleEmbeddedTerminal}
                       className={cn(
                         "border border-border/0",
-                        embeddedTerminalVisible && "text-white"
+                        embeddedTerminalVisible && "text-foreground"
                       )}
                     >
                       <Terminal className="h-4.5 w-4.5" />
@@ -153,10 +153,10 @@ export function ChatNavbar({
                   onClick={onToggleRightSidebar}
                   className={cn(
                     "border border-border/0",
-                    rightSidebarVisible && "text-white"
+                    rightSidebarVisible && "text-foreground"
                   )}
                 >
-                  <PanelRight className="h-4.5 w-4.5" />
+                  <GitCompare className="h-4.5 w-4.5" />
                 </Button>
               </HotkeyTooltipTrigger>
               <HotkeyTooltipContent side="bottom" shortcut={rightSidebarShortcut} />

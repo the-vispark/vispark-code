@@ -2,44 +2,49 @@ import { describe, expect, mock, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { RightSidebar } from "./RightSidebar"
-import type { VisparkCodeSocket } from "../../app/socket"
-
-const socketStub = {
-  subscribeFileTree: () => () => {},
-  command: async () => {
-    throw new Error("Not implemented in SSR test")
-  },
-} as unknown as VisparkCodeSocket
+import { TooltipProvider } from "../ui/tooltip"
 
 describe("RightSidebar", () => {
-  test("renders the placeholder copy", () => {
-    const markup = renderToStaticMarkup(
+  test("renders the empty-state copy", () => {
+    const markup = renderToStaticMarkup(createElement(
+      TooltipProvider,
+      null,
       createElement(RightSidebar, {
-        projectId: null,
-        isVisible: true,
-        socket: socketStub,
-        onOpenFile: async () => {},
-        onOpenInFinder: async () => {},
+        projectId: "project-1",
+        diffs: { status: "unknown", files: [] },
+        diffRenderMode: "unified",
+        wrapLines: false,
+        onOpenFile: () => {},
+        onGenerateCommitMessage: async () => ({ subject: "", body: "" }),
+        onCommit: async () => null,
+        onDiffRenderModeChange: () => {},
+        onWrapLinesChange: () => {},
         onClose: () => {},
       })
-    )
+    ))
 
-    expect(markup).toContain("Open a project to browse files.")
+    expect(markup).toContain("No file changes.")
   })
 
   test("renders the close affordance", () => {
     const onClose = mock(() => {})
-    const markup = renderToStaticMarkup(
+    const markup = renderToStaticMarkup(createElement(
+      TooltipProvider,
+      null,
       createElement(RightSidebar, {
-        projectId: null,
-        isVisible: true,
-        socket: socketStub,
-        onOpenFile: async () => {},
-        onOpenInFinder: async () => {},
+        projectId: "project-1",
+        diffs: { status: "unknown", files: [] },
+        diffRenderMode: "unified",
+        wrapLines: false,
+        onOpenFile: () => {},
+        onGenerateCommitMessage: async () => ({ subject: "", body: "" }),
+        onCommit: async () => null,
+        onDiffRenderModeChange: () => {},
+        onWrapLinesChange: () => {},
         onClose,
       })
-    )
+    ))
 
-    expect(markup).toContain("Close file browser")
+    expect(markup).toContain("Close right sidebar")
   })
 })

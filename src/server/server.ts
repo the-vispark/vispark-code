@@ -176,6 +176,7 @@ export async function startVisparkCodeServer(options: StartVisparkCodeServerOpti
             const upgraded = serverInstance.upgrade(req, {
               data: {
                 subscriptions: new Map(),
+                snapshotSignatures: new Map(),
               },
             })
             return upgraded ? undefined : new Response("WebSocket upgrade failed", { status: 400 })

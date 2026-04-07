@@ -2,9 +2,11 @@ import type {
   AgentProvider,
   AppSettingsSnapshot,
   ChatAttachment,
+  ChatHistoryPage,
   ChatSnapshot,
   FileTreeDirectoryPage,
   FileTreeSnapshot,
+  DiffCommitMode,
   KeybindingsSnapshot,
   LocalProjectsSnapshot,
   ModelOptions,
@@ -26,7 +28,7 @@ export type SubscriptionTopic =
   | { type: "file-tree"; projectId: string }
   | { type: "update" }
   | { type: "keybindings" }
-  | { type: "chat"; chatId: string }
+  | { type: "chat"; chatId: string; recentLimit?: number }
   | { type: "terminal"; terminalId: string }
 
 export interface TerminalSnapshot {
@@ -90,8 +92,12 @@ export type ClientCommand =
       effort?: string
       planMode?: boolean
     }
+  | { type: "chat.refreshDiffs"; chatId: string }
+  | { type: "chat.generateCommitMessage"; chatId: string; paths: string[] }
+  | { type: "chat.commitDiffs"; chatId: string; paths: string[]; summary: string; description?: string; mode: DiffCommitMode }
   | { type: "chat.cancel"; chatId: string }
   | { type: "chat.stopDraining"; chatId: string }
+  | { type: "chat.loadHistory"; chatId: string; beforeCursor: string; limit: number }
   | { type: "chat.respondTool"; chatId: string; toolUseId: string; result: unknown }
   | { type: "terminal.create"; projectId: string; terminalId: string; cols: number; rows: number; scrollback: number }
   | { type: "terminal.input"; terminalId: string; data: string }
@@ -123,7 +129,7 @@ export type ServerSnapshot =
 export type ServerEnvelope =
   | { v: 1; type: "snapshot"; id: string; snapshot: ServerSnapshot }
   | { v: 1; type: "event"; id: string; event: TerminalEvent | FileTreeEvent }
-  | { v: 1; type: "ack"; id: string; result?: unknown }
+  | { v: 1; type: "ack"; id: string; result?: unknown | ChatHistoryPage }
   | { v: 1; type: "error"; id?: string; message: string }
 
 export type FileTreeReadDirectoryResult = FileTreeDirectoryPage
