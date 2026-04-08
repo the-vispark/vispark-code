@@ -1,0 +1,60 @@
+name: Publish to npm
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'the-vispark/vispark-code'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+
+      - name: Read package metadata
+        id: package
+        run: |
+          echo "name=$(node -p "require('./package.json').name")" >> "$GITHUB_OUTPUT"
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether version is already published
+        id: npm
+        run: |
+          if npm view "${{ steps.package.outputs.name }}@${{ steps.package.outputs.version }}" version >/dev/null 2>&1; then
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            echo "Version ${{ steps.package.outputs.version }} is already on npm. Skipping publish."
+          else
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            echo "Version ${{ steps.package.outputs.version }} is not on npm yet. Publishing."
+          fi
+
+      - name: Install dependencies
+        if: steps.npm.outputs.should_publish == 'true'
+        run: bun install
+
+      - name: Publish package
+        if: steps.npm.outputs.should_publish == 'true'
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

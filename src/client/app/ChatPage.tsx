@@ -2,7 +2,19 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { measureElement, useVirtualizer } from "@tanstack/react-virtual"
 import { ArrowDown, Upload } from "lucide-react"
 import { useOutletContext } from "react-router-dom"
-import type { AgentProvider, ChatDiffSnapshot, DiffCommitMode, DiffCommitResult, HydratedTranscriptMessage, KeybindingsSnapshot } from "../../shared/types"
+import type {
+  AgentProvider,
+  ChatBranchListEntry,
+  ChatBranchListResult,
+  ChatCheckoutBranchResult,
+  ChatCreateBranchResult,
+  ChatDiffSnapshot,
+  ChatSyncResult,
+  DiffCommitMode,
+  DiffCommitResult,
+  HydratedTranscriptMessage,
+  KeybindingsSnapshot,
+} from "../../shared/types"
 import { ChatInput, type ChatInputHandle } from "../components/chat-ui/ChatInput"
 import { ChatNavbar } from "../components/chat-ui/ChatNavbar"
 import { RightSidebar } from "../components/chat-ui/RightSidebar"
@@ -19,6 +31,7 @@ import { deriveLatestContextWindowSnapshot, type ContextWindowSnapshot } from ".
 import { cn } from "../lib/utils"
 import {
   DEFAULT_PROJECT_RIGHT_SIDEBAR_LAYOUT,
+  RIGHT_SIDEBAR_MIN_WIDTH_PX,
   RIGHT_SIDEBAR_MIN_SIZE_PERCENT,
   useRightSidebarStore,
 } from "../stores/rightSidebarStore"
@@ -634,8 +647,8 @@ export function ChatPage() {
   const [typedEmptyStateText, setTypedEmptyStateText] = useState("")
   const [isEmptyStateTypingComplete, setIsEmptyStateTypingComplete] = useState(false)
   const [fixedTerminalHeight, setFixedTerminalHeight] = useState(0)
-  const [isPageFileDragActive, setIsPageFileDragActive] = useState(false)
   const [layoutWidth, setLayoutWidth] = useState(0)
+  const [isPageFileDragActive, setIsPageFileDragActive] = useState(false)
   const [diffRenderMode, setDiffRenderMode] = useState<"unified" | "split">("unified")
   const [wrapDiffLines, setWrapDiffLines] = useState(false)
   const pageFileDragDepthRef = useRef(0)
@@ -683,6 +696,17 @@ export function ChatPage() {
   const shouldRenderTerminalLayout = Boolean(projectId && hasTerminals)
   const showRightSidebar = Boolean(projectId && rightSidebarLayout.isVisible)
   const shouldRenderRightSidebarLayout = Boolean(projectId)
+  const clampRightSidebarSize = useCallback((size: number, widthOverride?: number) => {
+    if (!Number.isFinite(size)) {
+      return rightSidebarLayout.size
+    }
+    const nextLayoutWidth = widthOverride ?? layoutWidth
+    const minPercentFromWidth = nextLayoutWidth > 0
+      ? (RIGHT_SIDEBAR_MIN_WIDTH_PX / nextLayoutWidth) * 100
+      : RIGHT_SIDEBAR_MIN_SIZE_PERCENT
+    return Math.max(RIGHT_SIDEBAR_MIN_SIZE_PERCENT, minPercentFromWidth, size)
+  }, [layoutWidth, rightSidebarLayout.size])
+  const effectiveRightSidebarSize = clampRightSidebarSize(rightSidebarLayout.size)
 
   const {
     isAnimating: isTerminalAnimating,
@@ -706,7 +730,7 @@ export function ChatPage() {
     projectId,
     shouldRenderRightSidebarLayout,
     showRightSidebar,
-    rightSidebarSize: rightSidebarLayout.size,
+    rightSidebarSize: effectiveRightSidebarSize,
   })
 
   useStickyChatFocus({
@@ -719,6 +743,22 @@ export function ChatPage() {
   useEffect(() => {
     activeChatIdRef.current = state.activeChatId
   }, [state.activeChatId])
+
+  useLayoutEffect(() => {
+    const element = layoutRootRef.current
+    if (!element) return
+
+    const updateWidth = () => {
+      const nextWidth = element.clientWidth
+      setLayoutWidth((current) => (Math.abs(current - nextWidth) < 1 ? current : nextWidth))
+    }
+
+    const observer = new ResizeObserver(updateWidth)
+    observer.observe(element)
+    updateWidth()
+
+    return () => observer.disconnect()
+  }, [])
 
   useEffect(() => {
     projectPathRef.current = state.runtime?.localPath ?? state.navbarLocalPath ?? null
@@ -846,6 +886,30 @@ export function ChatPage() {
     return result
   }, [dialog, refreshDiffs, state.socket])
 
+  const handleSyncBranch = useCallback(async (action: "fetch" | "pull" | "publish") => {
+    const chatId = activeChatIdRef.current
+    if (!chatId) {
+      return null
+    }
+
+    const result = await state.socket.command<ChatSyncResult>({
+      type: "chat.syncBranch",
+      chatId,
+      action,
+    })
+    if (result.snapshotChanged) {
+      refreshDiffs()
+    }
+    if (!result.ok) {
+      await dialog.alert({
+        title: result.title,
+        description: `${result.message}${result.detail ? `\n\n${result.detail}` : ""}`,
+        closeLabel: "OK",
+      })
+    }
+    return result
+  }, [dialog, refreshDiffs, state.socket])
+
   const handleGenerateCommitMessage = useCallback(async (args: { paths: string[] }) => {
     const chatId = activeChatIdRef.current
     if (!chatId) {
@@ -863,6 +927,141 @@ export function ChatPage() {
       body: result.body,
     }
   }, [state.socket])
+
+  const handleListBranches = useCallback(async () => {
+    const chatId = activeChatIdRef.current
+    if (!chatId) {
+      return {
+        recent: [],
+        local: [],
+        remote: [],
+        pullRequests: [],
+        pullRequestsStatus: "unavailable",
+      } satisfies ChatBranchListResult
+    }
+
+    return await state.socket.command<ChatBranchListResult>({
+      type: "chat.listBranches",
+      chatId,
+    })
+  }, [state.socket])
+
+  const handleCheckoutBranch = useCallback(async (branch: ChatBranchListEntry) => {
+    const chatId = activeChatIdRef.current
+    if (!chatId) {
+      return
+    }
+
+    let bringChanges = false
+    if ((state.chatDiffSnapshot?.files.length ?? 0) > 0) {
+      const confirmed = await dialog.confirm({
+        title: "Bring Changes?",
+        description: `You have uncommitted changes. Bring them to ${branch.name}?`,
+        confirmLabel: "Bring Changes",
+        cancelLabel: "Stay Here",
+      })
+      if (!confirmed) {
+        return
+      }
+      bringChanges = true
+    }
+
+    try {
+      const result = await state.socket.command<ChatCheckoutBranchResult>({
+        type: "chat.checkoutBranch",
+        chatId,
+        branch: branch.kind === "local"
+          ? { kind: "local", name: branch.name }
+          : branch.kind === "remote"
+            ? { kind: "remote", name: branch.name, remoteRef: branch.remoteRef ?? branch.displayName }
+            : {
+                kind: "pull_request",
+                name: branch.name,
+                prNumber: branch.prNumber ?? 0,
+                headRefName: branch.headRefName ?? branch.name,
+                headRepoCloneUrl: branch.headRepoCloneUrl,
+                isCrossRepository: branch.isCrossRepository,
+                remoteRef: branch.remoteRef,
+              },
+        bringChanges,
+      })
+
+      if (result.snapshotChanged) {
+        refreshDiffs()
+      }
+      if (!result.ok && !result.cancelled) {
+        await dialog.alert({
+          title: result.title,
+          description: `${result.message}${result.detail ? `\n\n${result.detail}` : ""}`,
+          closeLabel: "OK",
+        })
+      }
+    } catch (error) {
+      await dialog.alert({
+        title: "Checkout failed",
+        description: error instanceof Error ? error.message : String(error),
+        closeLabel: "OK",
+      })
+    }
+  }, [dialog, refreshDiffs, state.chatDiffSnapshot?.files.length, state.socket])
+
+  const handleCreateBranch = useCallback(async () => {
+    const chatId = activeChatIdRef.current
+    if (!chatId) {
+      return
+    }
+
+    const name = await dialog.prompt({
+      title: "New Branch",
+      description: "Enter a branch name.",
+      placeholder: "feature/my-branch",
+      confirmLabel: "Create",
+    })
+    if (!name) {
+      return
+    }
+
+    const branchList = await handleListBranches()
+    const currentBranchName = branchList.currentBranchName
+    const defaultBranchName = branchList.defaultBranchName
+
+    let baseBranchName = defaultBranchName
+    if (defaultBranchName && currentBranchName && defaultBranchName !== currentBranchName) {
+      const createFromDefault = await dialog.confirm({
+        title: "Branch Base",
+        description: `Create "${name}" from ${defaultBranchName} instead of ${currentBranchName}?`,
+        confirmLabel: `From ${defaultBranchName}`,
+        cancelLabel: `From ${currentBranchName}`,
+      })
+      baseBranchName = createFromDefault ? defaultBranchName : currentBranchName
+    }
+
+    try {
+      const result = await state.socket.command<ChatCreateBranchResult>({
+        type: "chat.createBranch",
+        chatId,
+        name,
+        baseBranchName,
+      })
+
+      if (result.snapshotChanged) {
+        refreshDiffs()
+      }
+      if (!result.ok) {
+        await dialog.alert({
+          title: result.title,
+          description: `${result.message}${result.detail ? `\n\n${result.detail}` : ""}`,
+          closeLabel: "OK",
+        })
+      }
+    } catch (error) {
+      await dialog.alert({
+        title: "Create branch failed",
+        description: error instanceof Error ? error.message : String(error),
+        closeLabel: "OK",
+      })
+    }
+  }, [dialog, handleListBranches, refreshDiffs, state.socket])
 
   const handleCloseRightSidebar = useCallback(() => {
     if (!projectId) return
@@ -1102,13 +1301,30 @@ export function ChatPage() {
     return () => observer.disconnect()
   }, [projectId, shouldRenderTerminalLayout, terminalLayout.mainSizes])
 
-  const clampRightSidebarSize = (size: number) => {
-    if (!Number.isFinite(size)) {
-      return rightSidebarLayout.size
+  useLayoutEffect(() => {
+    if (!showRightSidebar || layoutWidth <= 0 || isRightSidebarAnimating.current) {
+      return
     }
 
-    return Math.max(RIGHT_SIDEBAR_MIN_SIZE_PERCENT, size)
-  }
+    const clampedRightSidebarSize = clampRightSidebarSize(rightSidebarLayout.size, layoutWidth)
+    const currentLayout = rightSidebarPanelGroupRef.current?.getLayout()
+    if (!currentLayout) return
+    if (Math.abs((currentLayout.rightSidebar ?? 0) - clampedRightSidebarSize) < 0.1) {
+      return
+    }
+
+    rightSidebarPanelGroupRef.current?.setLayout({
+      workspace: 100 - clampedRightSidebarSize,
+      rightSidebar: clampedRightSidebarSize,
+    })
+  }, [
+    clampRightSidebarSize,
+    isRightSidebarAnimating,
+    layoutWidth,
+    rightSidebarLayout.size,
+    rightSidebarPanelGroupRef,
+    showRightSidebar,
+  ])
 
   const handleTranscriptDragEnter = useCallback((event: React.DragEvent) => {
     if (!hasDraggedFiles(event) || !state.hasSelectedProject) return
@@ -1273,7 +1489,7 @@ export function ChatPage() {
         >
           <ResizablePanel
             id="workspace"
-            defaultSize={`${100 - rightSidebarLayout.size}%`}
+            defaultSize={`${100 - effectiveRightSidebarSize}%`}
             minSize="20%"
             className="min-h-0 min-w-0"
           >
@@ -1343,7 +1559,7 @@ export function ChatPage() {
           />
           <ResizablePanel
             id="rightSidebar"
-            defaultSize={`${rightSidebarLayout.size}%`}
+            defaultSize={`${effectiveRightSidebarSize}%`}
             className="min-h-0 min-w-0"
             elementRef={sidebarPanelRef}
           >
@@ -1368,8 +1584,12 @@ export function ChatPage() {
                 onIgnoreFile={handleIgnoreDiffFile}
                 onCopyFilePath={handleCopyDiffFilePath}
                 onCopyRelativePath={handleCopyDiffRelativePath}
+                onListBranches={handleListBranches}
+                onCheckoutBranch={handleCheckoutBranch}
+                onCreateBranch={handleCreateBranch}
                 onGenerateCommitMessage={handleGenerateCommitMessage}
                 onCommit={handleCommitDiffs}
+                onSyncWithRemote={handleSyncBranch}
                 onDiffRenderModeChange={setDiffRenderMode}
                 onWrapLinesChange={setWrapDiffLines}
                 onClose={handleCloseRightSidebar}
