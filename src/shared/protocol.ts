@@ -94,7 +94,7 @@ export type ClientCommand =
     }
   | { type: "chat.refreshDiffs"; chatId: string }
   | { type: "chat.listBranches"; chatId: string }
-  | { type: "chat.syncBranch"; chatId: string; action: "fetch" | "pull" | "publish" }
+  | { type: "chat.syncBranch"; chatId: string; action: "fetch" | "pull" | "push" | "publish" }
   | {
       type: "chat.checkoutBranch"
       chatId: string

@@ -211,6 +211,53 @@ describe("RightSidebar", () => {
     expect(markup).toContain("PR")
   })
 
+  test("shows push for published branches that are ahead of origin", () => {
+    const markup = renderToStaticMarkup(createElement(
+      TooltipProvider,
+      null,
+      createElement(RightSidebar, {
+        projectId: "project-1",
+        diffs: {
+          status: "ready",
+          branchName: "feature/ahead",
+          defaultBranchName: "main",
+          hasUpstream: true,
+          aheadCount: 2,
+          files: [],
+          branchHistory: {
+            entries: [{
+              sha: "abc123",
+              summary: "Ship changes",
+              description: "",
+              authoredAt: new Date().toISOString(),
+              tags: [],
+            }],
+          },
+        },
+        editorLabel: "Cursor",
+        diffRenderMode: "unified",
+        wrapLines: false,
+        onOpenFile: () => {},
+        onDiscardFile: () => {},
+        onIgnoreFile: () => {},
+        onCopyFilePath: () => {},
+        onCopyRelativePath: () => {},
+        onListBranches: async () => ({ recent: [], local: [], remote: [], pullRequests: [], pullRequestsStatus: "unavailable" }),
+        onCheckoutBranch: async () => {},
+        onCreateBranch: async () => {},
+        onGenerateCommitMessage: async () => ({ subject: "", body: "" }),
+        onCommit: async () => null,
+        onSyncWithRemote: async () => null,
+        onDiffRenderModeChange: () => {},
+        onWrapLinesChange: () => {},
+        onClose: () => {},
+      })
+    ))
+
+    expect(markup).toContain("Push")
+    expect(markup).toContain("Ship changes")
+  })
+
   test("ignores only untracked files", () => {
     expect(canIgnoreDiffFile({
       path: "tmp.log",

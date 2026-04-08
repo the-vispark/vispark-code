@@ -468,4 +468,43 @@ describe("DiffStore", () => {
     expect(result.ok).toBe(true)
     expect((await run(["git", "branch", "--show-current"], repoRoot)).trim()).toBe("feature/new")
   })
+
+  test("syncBranch pushes ahead commits to the configured upstream", async () => {
+    const remoteRoot = await mkdtemp(path.join(tmpdir(), "vispark-code-diff-store-remote-"))
+    tempDirs.push(remoteRoot)
+    await run(["git", "init", "--bare"], remoteRoot)
+
+    const repoRoot = await createRepo()
+    tempDirs.push(repoRoot)
+    await writeFile(path.join(repoRoot, "app.txt"), "base\n", "utf8")
+    await run(["git", "add", "."], repoRoot)
+    await run(["git", "commit", "-m", "init"], repoRoot)
+    await run(["git", "remote", "add", "origin", remoteRoot], repoRoot)
+    await run(["git", "push", "-u", "origin", "HEAD"], repoRoot)
+
+    await writeFile(path.join(repoRoot, "app.txt"), "ahead\n", "utf8")
+    await run(["git", "commit", "-am", "ahead"], repoRoot)
+
+    const branchName = (await run(["git", "branch", "--show-current"], repoRoot)).trim()
+    const store = new DiffStore(repoRoot)
+    await store.initialize()
+    await store.refreshSnapshot("chat-1", repoRoot)
+
+    const result = await store.syncBranch({
+      chatId: "chat-1",
+      projectPath: repoRoot,
+      action: "push",
+    })
+
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.action).toBe("push")
+      expect(result.aheadCount).toBe(0)
+      expect(result.behindCount).toBe(0)
+    }
+
+    const localHead = (await run(["git", "rev-parse", "HEAD"], repoRoot)).trim()
+    const remoteHead = (await run(["git", "--git-dir", remoteRoot, "rev-parse", `refs/heads/${branchName}`], repoRoot)).trim()
+    expect(remoteHead).toBe(localHead)
+  })
 })

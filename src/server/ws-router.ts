@@ -321,6 +321,14 @@ export function createWsRouter({
 
   agent.setBackgroundErrorReporter?.(broadcastError)
 
+  function resolveChatProject(chatId: string) {
+    const chat = store.getChat(chatId)
+    if (!chat) throw new Error("Chat not found")
+    const project = store.getProject(chat.projectId)
+    if (!project) throw new Error("Project not found")
+    return { chat, project }
+  }
+
   async function handleCommand(ws: ServerWebSocket<ClientState>, message: Extract<ClientEnvelope, { type: "command" }>) {
     const { command, id } = message
     try {
@@ -449,14 +457,7 @@ export function createWsRouter({
           break
         }
         case "chat.refreshDiffs": {
-          const chat = store.getChat(command.chatId)
-          if (!chat) {
-            throw new Error("Chat not found")
-          }
-          const project = store.getProject(chat.projectId)
-          if (!project) {
-            throw new Error("Project not found")
-          }
+          const { project } = resolveChatProject(command.chatId)
           const changed = await resolvedDiffStore.refreshSnapshot(command.chatId, project.localPath)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           if (changed) {
@@ -465,14 +466,7 @@ export function createWsRouter({
           return
         }
         case "chat.listBranches": {
-          const chat = store.getChat(command.chatId)
-          if (!chat) {
-            throw new Error("Chat not found")
-          }
-          const project = store.getProject(chat.projectId)
-          if (!project) {
-            throw new Error("Project not found")
-          }
+          const { project } = resolveChatProject(command.chatId)
           const result = await resolvedDiffStore.listBranches({
             projectPath: project.localPath,
           })
@@ -480,14 +474,7 @@ export function createWsRouter({
           return
         }
         case "chat.checkoutBranch": {
-          const chat = store.getChat(command.chatId)
-          if (!chat) {
-            throw new Error("Chat not found")
-          }
-          const project = store.getProject(chat.projectId)
-          if (!project) {
-            throw new Error("Project not found")
-          }
+          const { project } = resolveChatProject(command.chatId)
           const result = await resolvedDiffStore.checkoutBranch({
             chatId: command.chatId,
             projectPath: project.localPath,
@@ -501,14 +488,7 @@ export function createWsRouter({
           return
         }
         case "chat.syncBranch": {
-          const chat = store.getChat(command.chatId)
-          if (!chat) {
-            throw new Error("Chat not found")
-          }
-          const project = store.getProject(chat.projectId)
-          if (!project) {
-            throw new Error("Project not found")
-          }
+          const { project } = resolveChatProject(command.chatId)
           const result = await resolvedDiffStore.syncBranch({
             chatId: command.chatId,
             projectPath: project.localPath,
@@ -521,14 +501,7 @@ export function createWsRouter({
           return
         }
         case "chat.createBranch": {
-          const chat = store.getChat(command.chatId)
-          if (!chat) {
-            throw new Error("Chat not found")
-          }
-          const project = store.getProject(chat.projectId)
-          if (!project) {
-            throw new Error("Project not found")
-          }
+          const { project } = resolveChatProject(command.chatId)
           const result = await resolvedDiffStore.createBranch({
             chatId: command.chatId,
             projectPath: project.localPath,
@@ -542,14 +515,7 @@ export function createWsRouter({
           return
         }
         case "chat.generateCommitMessage": {
-          const chat = store.getChat(command.chatId)
-          if (!chat) {
-            throw new Error("Chat not found")
-          }
-          const project = store.getProject(chat.projectId)
-          if (!project) {
-            throw new Error("Project not found")
-          }
+          const { project } = resolveChatProject(command.chatId)
           const result = await resolvedDiffStore.generateCommitMessage({
             projectPath: project.localPath,
             paths: command.paths,
@@ -558,14 +524,7 @@ export function createWsRouter({
           return
         }
         case "chat.commitDiffs": {
-          const chat = store.getChat(command.chatId)
-          if (!chat) {
-            throw new Error("Chat not found")
-          }
-          const project = store.getProject(chat.projectId)
-          if (!project) {
-            throw new Error("Project not found")
-          }
+          const { project } = resolveChatProject(command.chatId)
           const result = await resolvedDiffStore.commitFiles({
             chatId: command.chatId,
             projectPath: project.localPath,
@@ -581,14 +540,7 @@ export function createWsRouter({
           return
         }
         case "chat.discardDiffFile": {
-          const chat = store.getChat(command.chatId)
-          if (!chat) {
-            throw new Error("Chat not found")
-          }
-          const project = store.getProject(chat.projectId)
-          if (!project) {
-            throw new Error("Project not found")
-          }
+          const { project } = resolveChatProject(command.chatId)
           const result = await resolvedDiffStore.discardFile({
             chatId: command.chatId,
             projectPath: project.localPath,
@@ -601,14 +553,7 @@ export function createWsRouter({
           return
         }
         case "chat.ignoreDiffFile": {
-          const chat = store.getChat(command.chatId)
-          if (!chat) {
-            throw new Error("Chat not found")
-          }
-          const project = store.getProject(chat.projectId)
-          if (!project) {
-            throw new Error("Project not found")
-          }
+          const { project } = resolveChatProject(command.chatId)
           const result = await resolvedDiffStore.ignoreFile({
             chatId: command.chatId,
             projectPath: project.localPath,

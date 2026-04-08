@@ -1,5 +1,5 @@
 import { PatchDiff } from "@pierre/diffs/react"
-import { Ban, Check, ChevronDown, ChevronUp, Code, Columns2, Copy, Download, Ellipsis, GitBranch, GitPullRequest, LoaderCircle, Minus, RefreshCw, Rows3, Search, Trash2, Upload, WrapText } from "lucide-react"
+import { ArrowUp, Ban, Check, ChevronDown, ChevronUp, Code, Columns2, Copy, Download, Ellipsis, GitBranch, GitPullRequest, LoaderCircle, Minus, RefreshCw, Rows3, Search, Trash2, Upload, WrapText } from "lucide-react"
 import { ExternalLink, SquareArrowRight, SquareDot, SquareMinus, SquarePlus } from "lucide-react"
 import { memo, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from "react"
 import type {
@@ -51,23 +51,26 @@ function getDiffPreviewAttachment(projectId: string | null, file: DiffFile): Cha
   }
 }
 
-interface RightSidebarProps {
-  projectId: string | null
-  diffs: ChatDiffSnapshot
-  editorLabel: string
-  diffRenderMode: DiffRenderMode
-  wrapLines: boolean
+export interface DiffFileActions {
   onOpenFile: (path: string) => void
   onDiscardFile: (path: string) => void
   onIgnoreFile: (path: string) => void
   onCopyFilePath: (path: string) => void
   onCopyRelativePath: (path: string) => void
+}
+
+interface RightSidebarProps extends DiffFileActions {
+  projectId: string | null
+  diffs: ChatDiffSnapshot
+  editorLabel: string
+  diffRenderMode: DiffRenderMode
+  wrapLines: boolean
   onListBranches: () => Promise<ChatBranchListResult>
   onCheckoutBranch: (branch: ChatBranchListEntry) => Promise<void>
   onCreateBranch: () => Promise<void>
   onGenerateCommitMessage: (args: { paths: string[] }) => Promise<{ subject: string; body: string }>
   onCommit: (args: { paths: string[]; summary: string; description: string; mode: DiffCommitMode }) => Promise<DiffCommitResult | null>
-  onSyncWithRemote: (action: "fetch" | "pull" | "publish") => Promise<unknown>
+  onSyncWithRemote: (action: "fetch" | "pull" | "push" | "publish") => Promise<unknown>
   onDiffRenderModeChange: (mode: DiffRenderMode) => void
   onWrapLinesChange: (wrap: boolean) => void
   onClose: () => void
@@ -222,7 +225,7 @@ function formatFetchTooltip(isoTimestamp?: string) {
   return `Last fetched ${formatRelativeTime(isoTimestamp)}`
 }
 
-function CommitHistoryRow({ entry }: { entry: ChatBranchHistoryEntry }) {
+function CommitHistoryRow({ entry, isPendingPush = false }: { entry: ChatBranchHistoryEntry; isPendingPush?: boolean }) {
   const relativeTime = formatRelativeTime(entry.authoredAt)
   const isClickable = Boolean(entry.githubUrl)
   return (
@@ -234,7 +237,7 @@ function CommitHistoryRow({ entry }: { entry: ChatBranchHistoryEntry }) {
         window.open(entry.githubUrl, "_blank", "noopener,noreferrer")
       }}
       className={cn(
-        "flex w-full items-start gap-3 rounded-lg border border-border bg-background px-3 py-2 text-left transition-colors",
+        "flex w-full items-start gap-3 rounded-lg border border-border bg-background pl-3 pr-2 py-2 text-left transition-colors",
         isClickable ? "hover:bg-accent" : "cursor-default opacity-60"
       )}
     >
@@ -254,10 +257,21 @@ function CommitHistoryRow({ entry }: { entry: ChatBranchHistoryEntry }) {
       {entry.tags.length > 0 ? (
         <div className="flex shrink-0 flex-wrap justify-end gap-1">
           {entry.tags.map((tag) => (
-            <span key={tag} className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
+            <span key={tag} className="inline-flex items-center rounded-sm border border-text-muted-foreground px-2 py-0.5 text-[11px] text-muted-foreground">
               {tag}
             </span>
           ))}
+          {isPendingPush ? (
+            <span className="inline-flex items-center rounded-sm border border-text-muted-foreground px-2 py-0.5 text-[11px] text-muted-foreground">
+              <ArrowUp className="size-3" />
+            </span>
+          ) : null}
+        </div>
+      ) : isPendingPush ? (
+        <div className="flex shrink-0 flex-wrap justify-end gap-1">
+          <span className="inline-flex items-center rounded-sm border border-text-muted-foreground px-2 py-0.5 text-[11px] text-muted-foreground">
+            <ArrowUp className="size-3" />
+          </span>
         </div>
       ) : null}
     </button>
@@ -465,11 +479,7 @@ function DiffFileCard({
   wrapLines,
   onToggleCollapsed,
   onToggleChecked,
-  onOpenFile,
-  onDiscardFile,
-  onIgnoreFile,
-  onCopyFilePath,
-  onCopyRelativePath,
+  fileActions,
 }: {
   file: DiffFile
   rootRef: RefObject<HTMLDivElement | null>
@@ -481,11 +491,7 @@ function DiffFileCard({
   wrapLines: boolean
   onToggleCollapsed: () => void
   onToggleChecked: () => void
-  onOpenFile: (path: string) => void
-  onDiscardFile: (path: string) => void
-  onIgnoreFile: (path: string) => void
-  onCopyFilePath: (path: string) => void
-  onCopyRelativePath: (path: string) => void
+  fileActions: DiffFileActions
 }) {
   const counts = getPatchCounts(file.patch)
   const canIgnore = canIgnoreDiffFile(file)
@@ -557,7 +563,7 @@ function DiffFileCard({
                 title={file.path}
                 onClick={(event) => {
                   event.stopPropagation()
-                  onOpenFile(file.path)
+                  fileActions.onOpenFile(file.path)
                 }}
                 className="flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-[opacity,color,background-color] group-hover/header:opacity-70 hover:bg-accent hover:text-foreground focus-visible:opacity-100"
               >
@@ -626,7 +632,7 @@ function DiffFileCard({
         <ContextMenuItem
           onSelect={(event) => {
             event.stopPropagation()
-            onOpenFile(file.path)
+            fileActions.onOpenFile(file.path)
           }}
         >
           <Code className="h-3.5 w-3.5" />
@@ -635,7 +641,7 @@ function DiffFileCard({
         <ContextMenuItem
           onSelect={(event) => {
             event.stopPropagation()
-            onDiscardFile(file.path)
+            fileActions.onDiscardFile(file.path)
           }}
           className="text-destructive dark:text-red-400 hover:bg-destructive/10 focus:bg-destructive/10 dark:hover:bg-red-500/20 dark:focus:bg-red-500/20"
         >
@@ -647,7 +653,7 @@ function DiffFileCard({
           onSelect={(event) => {
             event.stopPropagation()
             if (!canIgnore) return
-            onIgnoreFile(file.path)
+            fileActions.onIgnoreFile(file.path)
           }}
         >
           <Ban className="h-3.5 w-3.5" />
@@ -657,7 +663,7 @@ function DiffFileCard({
         <ContextMenuItem
           onSelect={(event) => {
             event.stopPropagation()
-            onCopyFilePath(file.path)
+            fileActions.onCopyFilePath(file.path)
           }}
         >
           <Copy className="h-3.5 w-3.5" />
@@ -666,7 +672,7 @@ function DiffFileCard({
         <ContextMenuItem
           onSelect={(event) => {
             event.stopPropagation()
-            onCopyRelativePath(file.path)
+            fileActions.onCopyRelativePath(file.path)
           }}
         >
           <Copy className="h-3.5 w-3.5" />
@@ -698,6 +704,13 @@ function RightSidebarImpl({
   onWrapLinesChange,
   onClose,
 }: RightSidebarProps) {
+  const fileActions: DiffFileActions = useMemo(() => ({
+    onOpenFile,
+    onDiscardFile,
+    onIgnoreFile,
+    onCopyFilePath,
+    onCopyRelativePath,
+  }), [onOpenFile, onDiscardFile, onIgnoreFile, onCopyFilePath, onCopyRelativePath])
   const hasChanges = diffs.files.length > 0
   const [collapsedPaths, setCollapsedPaths] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(diffs.files.map((file) => [file.path, true]))
@@ -761,6 +774,7 @@ function RightSidebarImpl({
   const isBusy = isGenerating || isCommitting
   const branchHistory = diffs.branchHistory?.entries ?? []
   const behindCount = diffs.behindCount ?? 0
+  const aheadCount = diffs.aheadCount ?? 0
   const isPublishedBranch = diffs.hasUpstream === true
   const isPublishableBranch = diffs.hasUpstream === false && Boolean(diffs.branchName)
   const encodedBranchName = diffs.branchName
@@ -832,11 +846,11 @@ function RightSidebarImpl({
     void handleGenerate()
   }
 
-  async function handleSync() {
+  async function handleSync(action: "fetch" | "pull" | "push" | "publish" = syncAction) {
     if (diffs.status !== "ready" || isSyncing) return
     setIsSyncing(true)
     try {
-      await onSyncWithRemote(syncAction)
+      await onSyncWithRemote(action)
     } finally {
       setIsSyncing(false)
     }
@@ -899,6 +913,21 @@ function RightSidebarImpl({
                     </span>
                   </Button>
                 )}
+                {isPublishedBranch && aheadCount > 0 ? (
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={() => void handleSync("push")}
+                    disabled={isSyncing}
+                    className="h-7 gap-1.5 px-2 text-xs"
+                  >
+                    {isSyncing ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                    <span>Push</span>
+                    <span className="inline-flex min-w-4 items-center justify-center rounded-full bg-primary-foreground/15 px-1 text-[10px] text-primary-foreground">
+                      {aheadCount}
+                    </span>
+                  </Button>
+                ) : null}
                 {canOpenPullRequest && compareUrl ? (
                   <Button
                     variant="ghost"
@@ -995,7 +1024,7 @@ function RightSidebarImpl({
                 </div>
               ) : (
                 <div className="space-y-1.5 p-1.5">
-                  {branchHistory.map((entry) => <CommitHistoryRow key={entry.sha} entry={entry} />)}
+                  {branchHistory.map((entry, index) => <CommitHistoryRow key={entry.sha} entry={entry} isPendingPush={index < aheadCount} />)}
                 </div>
               )
             ) : diffs.files.length === 0 ? (
@@ -1024,11 +1053,7 @@ function RightSidebarImpl({
                         if (!projectId) return
                         setCheckedPath(projectId, file.path, !isChecked)
                       }}
-                      onOpenFile={onOpenFile}
-                      onDiscardFile={onDiscardFile}
-                      onIgnoreFile={onIgnoreFile}
-                      onCopyFilePath={onCopyFilePath}
-                      onCopyRelativePath={onCopyRelativePath}
+                      fileActions={fileActions}
                     />
                   )
                 })}

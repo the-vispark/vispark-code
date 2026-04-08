@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type {
+  BranchMetadata,
   ChatBranchHistoryEntry,
   ChatBranchHistorySnapshot,
   ChatBranchListEntry,
@@ -13,19 +14,13 @@ import type {
   ChatSyncResult,
   DiffCommitMode,
   DiffCommitResult,
+  UpstreamStatus,
 } from "../shared/types"
 import { generateCommitMessageDetailed } from "./generate-commit-message"
 import { inferProjectFileContentType } from "./uploads"
 
-interface StoredChatDiffState {
+interface StoredChatDiffState extends BranchMetadata, UpstreamStatus {
   status: ChatDiffSnapshot["status"]
-  branchName?: string
-  defaultBranchName?: string
-  originRepoSlug?: string
-  hasUpstream?: boolean
-  aheadCount?: number
-  behindCount?: number
-  lastFetchedAt?: string
   files: ChatDiffFile[]
   branchHistory: ChatBranchHistorySnapshot
 }
@@ -45,22 +40,23 @@ function createEmptyState(): StoredChatDiffState {
   }
 }
 
-function snapshotsEqual(left: StoredChatDiffState | undefined, right: StoredChatDiffState) {
-  if (!left) {
-    return right.status === "unknown" && right.files.length === 0
-  }
-  if (left.status !== right.status) return false
-  if (left.branchName !== right.branchName) return false
-  if (left.defaultBranchName !== right.defaultBranchName) return false
-  if (left.originRepoSlug !== right.originRepoSlug) return false
-  if (left.hasUpstream !== right.hasUpstream) return false
-  if (left.aheadCount !== right.aheadCount) return false
-  if (left.behindCount !== right.behindCount) return false
-  if (left.lastFetchedAt !== right.lastFetchedAt) return false
-  if (left.files.length !== right.files.length) return false
-  if (left.branchHistory.entries.length !== right.branchHistory.entries.length) return false
-  const sameHistory = left.branchHistory.entries.every((entry, index) => {
-    const other = right.branchHistory.entries[index]
+function branchMetadataEqual(left: BranchMetadata, right: BranchMetadata) {
+  return left.branchName === right.branchName
+    && left.defaultBranchName === right.defaultBranchName
+    && left.originRepoSlug === right.originRepoSlug
+    && left.hasUpstream === right.hasUpstream
+}
+
+function upstreamStatusEqual(left: UpstreamStatus, right: UpstreamStatus) {
+  return left.aheadCount === right.aheadCount
+    && left.behindCount === right.behindCount
+    && left.lastFetchedAt === right.lastFetchedAt
+}
+
+function branchHistoryEqual(left: ChatBranchHistorySnapshot, right: ChatBranchHistorySnapshot) {
+  if (left.entries.length !== right.entries.length) return false
+  return left.entries.every((entry, index) => {
+    const other = right.entries[index]
     return Boolean(other)
       && entry.sha === other.sha
       && entry.summary === other.summary
@@ -71,7 +67,17 @@ function snapshotsEqual(left: StoredChatDiffState | undefined, right: StoredChat
       && entry.tags.length === other.tags.length
       && entry.tags.every((tag, tagIndex) => tag === other.tags[tagIndex])
   })
-  if (!sameHistory) return false
+}
+
+function snapshotsEqual(left: StoredChatDiffState | undefined, right: StoredChatDiffState) {
+  if (!left) {
+    return right.status === "unknown" && right.files.length === 0
+  }
+  if (left.status !== right.status) return false
+  if (!branchMetadataEqual(left, right)) return false
+  if (!upstreamStatusEqual(left, right)) return false
+  if (left.files.length !== right.files.length) return false
+  if (!branchHistoryEqual(left.branchHistory, right.branchHistory)) return false
   return left.files.every((file, index) => {
     const other = right.files[index]
     return Boolean(other)
@@ -185,6 +191,35 @@ function createPushFailure(mode: DiffCommitMode, detail: string, snapshotChanged
     message,
     detail,
     localCommitCreated: true,
+    snapshotChanged,
+  }
+}
+
+function createSyncPushFailure(detail: string, snapshotChanged: boolean): ChatSyncResult {
+  const normalized = detail.toLowerCase()
+  let title = "Push failed"
+  let message = summarizeGitFailure(detail, "Git could not push this branch.")
+
+  if (normalized.includes("non-fast-forward") || normalized.includes("fetch first")) {
+    title = "Branch is not up to date"
+    message = "Your branch is behind its remote. Pull or rebase, then try pushing again."
+  } else if (normalized.includes("has no upstream branch") || normalized.includes("set-upstream")) {
+    title = "No upstream branch configured"
+    message = "This branch does not have an upstream remote branch configured yet."
+  } else if (normalized.includes("merge conflict") || normalized.includes("resolve conflicts")) {
+    title = "Merge conflicts need resolution"
+    message = "Git reported conflicts while preparing the push. Resolve them, then try again."
+  } else if (normalized.includes("permission denied") || normalized.includes("authentication failed") || normalized.includes("could not read from remote repository")) {
+    title = "Remote authentication failed"
+    message = "Git could not authenticate with the remote repository."
+  }
+
+  return {
+    ok: false,
+    action: "push",
+    title,
+    message,
+    detail,
     snapshotChanged,
   }
 }
@@ -465,16 +500,42 @@ function buildGitHubCommitUrl(remoteUrl: string | null, sha: string) {
   return slug ? `https://github.com/${slug}/commit/${sha}` : undefined
 }
 
-async function listCommitTags(repoRoot: string, sha: string) {
-  const result = await runGit(["tag", "--points-at", sha], repoRoot)
-  if (result.exitCode !== 0) {
-    return []
+async function getTagsByCommit(repoRoot: string, shas: string[]): Promise<Map<string, string[]>> {
+  const tagMap = new Map<string, string[]>()
+  if (shas.length === 0) return tagMap
+
+  for (const sha of shas) {
+    tagMap.set(sha, [])
   }
-  return result.stdout
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .sort((left, right) => left.localeCompare(right))
+
+  const result = await runGit(
+    ["log", "--max-count", String(shas.length), "--decorate-refs=refs/tags", "--format=%H %D", shas[0]!],
+    repoRoot
+  )
+
+  if (result.exitCode !== 0) {
+    return tagMap
+  }
+
+  for (const line of result.stdout.split(/\r?\n/u)) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    const spaceIndex = trimmed.indexOf(" ")
+    if (spaceIndex < 0) continue
+    const sha = trimmed.slice(0, spaceIndex)
+    const decorations = trimmed.slice(spaceIndex + 1)
+    if (!tagMap.has(sha) || !decorations) continue
+    const tags = decorations
+      .split(",")
+      .map((decoration) => decoration.trim())
+      .filter((decoration) => decoration.startsWith("tag: "))
+      .map((decoration) => decoration.slice(5))
+      .filter(Boolean)
+      .sort((left, right) => left.localeCompare(right))
+    tagMap.set(sha, tags)
+  }
+
+  return tagMap
 }
 
 async function getBranchHistory(args: {
@@ -498,23 +559,29 @@ async function getBranchHistory(args: {
   }
 
   const remoteUrl = await getOriginRemoteUrl(args.repoRoot)
-  const entries: ChatBranchHistoryEntry[] = []
+  const parsedRecords: Array<{ sha: string; summary: string; description: string; authorName?: string; authoredAt: string }> = []
 
   for (const record of logResult.stdout.split("\u001e")) {
     const trimmed = record.trim()
     if (!trimmed) continue
     const [sha, summary, description, authorName, authoredAt] = trimmed.split("\u001f")
     if (!sha || !summary || !authoredAt) continue
-    entries.push({
+    parsedRecords.push({
       sha,
       summary,
       description: (description ?? "").trim(),
       authorName: authorName?.trim() || undefined,
       authoredAt,
-      tags: await listCommitTags(args.repoRoot, sha),
-      githubUrl: buildGitHubCommitUrl(remoteUrl, sha),
     })
   }
+
+  const tagMap = await getTagsByCommit(args.repoRoot, parsedRecords.map((record) => record.sha))
+
+  const entries: ChatBranchHistoryEntry[] = parsedRecords.map((record) => ({
+    ...record,
+    tags: tagMap.get(record.sha) ?? [],
+    githubUrl: buildGitHubCommitUrl(remoteUrl, record.sha),
+  }))
 
   return { entries }
 }
@@ -1110,7 +1177,7 @@ export class DiffStore {
   async syncBranch(args: {
     chatId: string
     projectPath: string
-    action: "fetch" | "pull" | "publish"
+    action: "fetch" | "pull" | "push" | "publish"
   }): Promise<ChatSyncResult> {
     const repo = await resolveRepo(args.projectPath)
     if (!repo) {
@@ -1139,6 +1206,39 @@ export class DiffStore {
           detail,
           snapshotChanged: false,
         }
+      }
+
+      const snapshotChanged = await this.refreshSnapshot(args.chatId, args.projectPath)
+      const branchName = await getBranchName(repo.repoRoot)
+      const nextHasUpstream = await hasUpstreamBranch(repo.repoRoot)
+      const { aheadCount, behindCount } = nextHasUpstream
+        ? await getUpstreamStatusCounts(repo.repoRoot)
+        : { aheadCount: undefined, behindCount: undefined }
+
+      return {
+        ok: true,
+        action: args.action,
+        branchName,
+        aheadCount,
+        behindCount,
+        snapshotChanged,
+      }
+    }
+
+    if (args.action === "push") {
+      if (!hasUpstream) {
+        return {
+          ok: false,
+          action: args.action,
+          title: "Push failed",
+          message: "This branch does not have an upstream remote branch configured yet.",
+          snapshotChanged: false,
+        }
+      }
+
+      const pushResult = await runGit(["push"], repo.repoRoot)
+      if (pushResult.exitCode !== 0) {
+        return createSyncPushFailure(formatGitFailure(pushResult), false)
       }
 
       const snapshotChanged = await this.refreshSnapshot(args.chatId, args.projectPath)
