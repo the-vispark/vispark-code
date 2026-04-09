@@ -34,7 +34,8 @@ import { actionMatchesEvent, getResolvedKeybindings } from "../lib/keybindings"
 import { deriveLatestContextWindowSnapshot, type ContextWindowSnapshot } from "../lib/contextWindow"
 import { cn } from "../lib/utils"
 import {
-  DEFAULT_PROJECT_RIGHT_SIDEBAR_LAYOUT,
+  DEFAULT_RIGHT_SIDEBAR_SIZE,
+  DEFAULT_RIGHT_SIDEBAR_VISIBILITY_STATE,
   RIGHT_SIDEBAR_MIN_WIDTH_PX,
   RIGHT_SIDEBAR_MIN_SIZE_PERCENT,
   useRightSidebarStore,
@@ -208,6 +209,7 @@ interface ChatTranscriptViewportProps {
   typedEmptyStateText: string
   isEmptyStateTypingComplete: boolean
   isPageFileDragActive: boolean
+  showEmptyState: boolean
 }
 
 const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
@@ -233,6 +235,7 @@ const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
   typedEmptyStateText,
   isEmptyStateTypingComplete,
   isPageFileDragActive,
+  showEmptyState,
 }: ChatTranscriptViewportProps) {
   const contentRootRef = useRef<HTMLDivElement>(null)
   const previousRowCountRef = useRef(0)
@@ -421,7 +424,7 @@ const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
         </div>
       </div>
 
-      {messages.length === 0 ? (
+      {showEmptyState ? (
         <div
           className="pointer-events-none absolute inset-x-4 animate-fade-in"
           style={{
@@ -650,6 +653,7 @@ export function ChatPage() {
   const chatInputRef = useRef<ChatInputHandle | null>(null)
   const [typedEmptyStateText, setTypedEmptyStateText] = useState("")
   const [isEmptyStateTypingComplete, setIsEmptyStateTypingComplete] = useState(false)
+  const showEmptyState = state.messages.length === 0 && state.runtime?.title === "New Chat"
   const [fixedTerminalHeight, setFixedTerminalHeight] = useState(0)
   const [layoutWidth, setLayoutWidth] = useState(0)
   const [isPageFileDragActive, setIsPageFileDragActive] = useState(false)
@@ -664,8 +668,9 @@ export function ChatPage() {
   const projectId = state.activeProjectId
   const projectTerminalLayout = useTerminalLayoutStore((store) => (projectId ? store.projects[projectId] : undefined))
   const terminalLayout = projectTerminalLayout ?? DEFAULT_PROJECT_TERMINAL_LAYOUT
-  const projectRightSidebarLayout = useRightSidebarStore((store) => (projectId ? store.projects[projectId] : undefined))
-  const rightSidebarLayout = projectRightSidebarLayout ?? DEFAULT_PROJECT_RIGHT_SIDEBAR_LAYOUT
+  const projectRightSidebarVisibility = useRightSidebarStore((store) => (projectId ? store.projects[projectId] : undefined))
+  const rightSidebarVisibility = projectRightSidebarVisibility ?? DEFAULT_RIGHT_SIDEBAR_VISIBILITY_STATE
+  const globalRightSidebarSize = useRightSidebarStore((store) => store.size)
   const addTerminal = useTerminalLayoutStore((store) => store.addTerminal)
   const removeTerminal = useTerminalLayoutStore((store) => store.removeTerminal)
   const toggleVisibility = useTerminalLayoutStore((store) => store.toggleVisibility)
@@ -699,19 +704,19 @@ export function ChatPage() {
   const hasTerminals = terminalLayout.terminals.length > 0
   const showTerminalPane = Boolean(projectId && terminalLayout.isVisible && hasTerminals)
   const shouldRenderTerminalLayout = Boolean(projectId && hasTerminals)
-  const showRightSidebar = Boolean(projectId && rightSidebarLayout.isVisible)
+  const showRightSidebar = Boolean(projectId && rightSidebarVisibility.isVisible)
   const shouldRenderRightSidebarLayout = Boolean(projectId)
   const clampRightSidebarSize = useCallback((size: number, widthOverride?: number) => {
     if (!Number.isFinite(size)) {
-      return rightSidebarLayout.size
+      return globalRightSidebarSize
     }
     const nextLayoutWidth = widthOverride ?? layoutWidth
     const minPercentFromWidth = nextLayoutWidth > 0
       ? (RIGHT_SIDEBAR_MIN_WIDTH_PX / nextLayoutWidth) * 100
       : RIGHT_SIDEBAR_MIN_SIZE_PERCENT
     return Math.max(RIGHT_SIDEBAR_MIN_SIZE_PERCENT, minPercentFromWidth, size)
-  }, [layoutWidth, rightSidebarLayout.size])
-  const effectiveRightSidebarSize = clampRightSidebarSize(rightSidebarLayout.size)
+  }, [globalRightSidebarSize, layoutWidth])
+  const effectiveRightSidebarSize = clampRightSidebarSize(globalRightSidebarSize ?? DEFAULT_RIGHT_SIDEBAR_SIZE)
 
   const {
     isAnimating: isTerminalAnimating,
@@ -1269,7 +1274,7 @@ export function ChatPage() {
   }
 
   useEffect(() => {
-    if (state.messages.length !== 0) return
+    if (!showEmptyState) return
 
     setTypedEmptyStateText("")
     setIsEmptyStateTypingComplete(false)
@@ -1286,7 +1291,7 @@ export function ChatPage() {
     }, EMPTY_STATE_TYPING_INTERVAL_MS)
 
     return () => window.clearInterval(interval)
-  }, [state.activeChatId, state.messages.length])
+  }, [showEmptyState, state.activeChatId])
 
   useEffect(() => {
     function handleGlobalKeydown(event: KeyboardEvent) {
@@ -1461,7 +1466,7 @@ export function ChatPage() {
       return
     }
 
-    const clampedRightSidebarSize = clampRightSidebarSize(rightSidebarLayout.size, layoutWidth)
+    const clampedRightSidebarSize = clampRightSidebarSize(globalRightSidebarSize, layoutWidth)
     const currentLayout = rightSidebarPanelGroupRef.current?.getLayout()
     if (!currentLayout) return
     if (Math.abs((currentLayout.rightSidebar ?? 0) - clampedRightSidebarSize) < 0.1) {
@@ -1476,7 +1481,7 @@ export function ChatPage() {
     clampRightSidebarSize,
     isRightSidebarAnimating,
     layoutWidth,
-    rightSidebarLayout.size,
+    globalRightSidebarSize,
     rightSidebarPanelGroupRef,
     showRightSidebar,
   ])
@@ -1567,6 +1572,7 @@ export function ChatPage() {
           typedEmptyStateText={typedEmptyStateText}
           isEmptyStateTypingComplete={isEmptyStateTypingComplete}
           isPageFileDragActive={isPageFileDragActive}
+          showEmptyState={showEmptyState}
         />
 
         {shouldShowTranscriptToc ? (
@@ -1646,7 +1652,7 @@ export function ChatPage() {
               return
             }
 
-            setRightSidebarSize(projectId, clampRightSidebarSize(layout.rightSidebar))
+            setRightSidebarSize(clampRightSidebarSize(layout.rightSidebar))
           }}
         >
           <ResizablePanel

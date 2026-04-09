@@ -1,20 +1,20 @@
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
 
-export interface ProjectRightSidebarLayout {
+export interface ProjectRightSidebarVisibilityState {
   isVisible: boolean
-  size: number
 }
 
 interface RightSidebarState {
-  projects: Record<string, ProjectRightSidebarLayout>
+  size: number
+  projects: Record<string, ProjectRightSidebarVisibilityState>
   toggleVisibility: (projectId: string) => void
-  setSize: (projectId: string, size: number) => void
+  setSize: (size: number) => void
   clearProject: (projectId: string) => void
 }
 
 export const RIGHT_SIDEBAR_MIN_SIZE_PERCENT = 20
-export const DEFAULT_RIGHT_SIDEBAR_SIZE = 30
+export const DEFAULT_RIGHT_SIDEBAR_SIZE = 33
 export const RIGHT_SIDEBAR_MIN_WIDTH_PX = 370
 
 function clampSize(size: number) {
@@ -22,60 +22,62 @@ function clampSize(size: number) {
   return Math.max(RIGHT_SIDEBAR_MIN_SIZE_PERCENT, size)
 }
 
-function createDefaultProjectLayout(): ProjectRightSidebarLayout {
+function createDefaultProjectVisibilityState(): ProjectRightSidebarVisibilityState {
   return {
     isVisible: false,
-    size: RIGHT_SIDEBAR_MIN_SIZE_PERCENT,
   }
 }
 
-function getProjectLayout(projects: Record<string, ProjectRightSidebarLayout>, projectId: string): ProjectRightSidebarLayout {
-  return projects[projectId] ?? createDefaultProjectLayout()
+function getProjectVisibilityState(
+  projects: Record<string, ProjectRightSidebarVisibilityState>,
+  projectId: string
+): ProjectRightSidebarVisibilityState {
+  return projects[projectId] ?? createDefaultProjectVisibilityState()
 }
 
 export function migrateRightSidebarStore(persistedState: unknown) {
   if (!persistedState || typeof persistedState !== "object") {
-    return { projects: {} }
+    return { size: DEFAULT_RIGHT_SIDEBAR_SIZE, projects: {} }
   }
 
-  const state = persistedState as { projects?: Record<string, Partial<ProjectRightSidebarLayout>> }
+  const state = persistedState as {
+    size?: number
+    projects?: Record<string, Partial<{ isVisible: boolean, size: number }>>
+  }
+  const globalSize = Number.isFinite(state.size)
+    ? clampSize(state.size ?? DEFAULT_RIGHT_SIDEBAR_SIZE)
+    : clampSize(
+        Object.values(state.projects ?? {}).find((layout) => Number.isFinite(layout.size))?.size
+        ?? DEFAULT_RIGHT_SIDEBAR_SIZE
+      )
   const projects = Object.fromEntries(
     Object.entries(state.projects ?? {}).map(([projectId, layout]) => [
       projectId,
       {
-        isVisible: false,
-        size: clampSize(layout.size ?? DEFAULT_RIGHT_SIDEBAR_SIZE),
+        isVisible: layout.isVisible ?? false,
       },
     ])
   )
 
-  return { projects }
+  return { size: globalSize, projects }
 }
 
 export const useRightSidebarStore = create<RightSidebarState>()(
   persist(
     (set) => ({
+      size: DEFAULT_RIGHT_SIDEBAR_SIZE,
       projects: {},
       toggleVisibility: (projectId) =>
         set((state) => ({
           projects: {
             ...state.projects,
             [projectId]: {
-              ...getProjectLayout(state.projects, projectId),
-              isVisible: !getProjectLayout(state.projects, projectId).isVisible,
+              ...getProjectVisibilityState(state.projects, projectId),
+              isVisible: !getProjectVisibilityState(state.projects, projectId).isVisible,
             },
           },
         })),
-      setSize: (projectId, size) =>
-        set((state) => ({
-          projects: {
-            ...state.projects,
-            [projectId]: {
-              ...getProjectLayout(state.projects, projectId),
-              size: clampSize(size),
-            },
-          },
-        })),
+      setSize: (size) => set({ size: clampSize(size) }),
       clearProject: (projectId) =>
         set((state) => {
           const { [projectId]: _removed, ...rest } = state.projects
@@ -84,19 +86,18 @@ export const useRightSidebarStore = create<RightSidebarState>()(
     }),
     {
       name: "right-sidebar-layouts",
-      version: 2,
+      version: 4,
       migrate: migrateRightSidebarStore,
     }
   )
 )
 
-export const DEFAULT_PROJECT_RIGHT_SIDEBAR_LAYOUT: ProjectRightSidebarLayout = {
+export const DEFAULT_RIGHT_SIDEBAR_VISIBILITY_STATE: ProjectRightSidebarVisibilityState = {
   isVisible: false,
-  size: 33,
 }
 
-export function getDefaultProjectRightSidebarLayout() {
+export function getDefaultRightSidebarVisibilityState() {
   return {
-    ...DEFAULT_PROJECT_RIGHT_SIDEBAR_LAYOUT,
+    ...DEFAULT_RIGHT_SIDEBAR_VISIBILITY_STATE,
   }
 }
