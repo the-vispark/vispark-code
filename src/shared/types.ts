@@ -448,6 +448,19 @@ export interface ChatBranchListResult {
   pullRequestsError?: string
 }
 
+export interface GitHubPublishInfo {
+  ghInstalled: boolean
+  authenticated: boolean
+  activeAccountLogin?: string
+  owners: string[]
+  suggestedRepoName: string
+}
+
+export interface GitHubRepoAvailabilityResult {
+  available: boolean
+  message: string
+}
+
 export interface BranchMetadata {
   branchName?: string
   defaultBranchName?: string

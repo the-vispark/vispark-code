@@ -38,7 +38,7 @@ const DEFAULT_UPDATE_SNAPSHOT: UpdateSnapshot = {
 }
 
 describe("ws-router", () => {
-  test("acks system.ping without broadcasting snapshots", () => {
+  test("acks system.ping without broadcasting snapshots", async () => {
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,
       agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
@@ -58,7 +58,7 @@ describe("ws-router", () => {
     const ws = new FakeWebSocket()
 
     ws.data.subscriptions.set("sub-1", { type: "sidebar" })
-    router.handleMessage(
+    await router.handleMessage(
       ws as never,
       JSON.stringify({
         v: 1,
@@ -77,7 +77,7 @@ describe("ws-router", () => {
     ])
   })
 
-  test("acks terminal.input without rebroadcasting terminal snapshots", () => {
+  test("acks terminal.input without rebroadcasting terminal snapshots", async () => {
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,
       agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
@@ -98,7 +98,7 @@ describe("ws-router", () => {
     const ws = new FakeWebSocket()
 
     ws.data.subscriptions.set("sub-terminal", { type: "terminal", terminalId: "terminal-1" })
-    router.handleMessage(
+    await router.handleMessage(
       ws as never,
       JSON.stringify({
         v: 1,
@@ -121,7 +121,7 @@ describe("ws-router", () => {
     ])
   })
 
-  test("subscribes and unsubscribes chat topics", () => {
+  test("subscribes and unsubscribes chat topics", async () => {
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,
       agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
@@ -140,7 +140,7 @@ describe("ws-router", () => {
     })
     const ws = new FakeWebSocket()
 
-    router.handleMessage(
+    await router.handleMessage(
       ws as never,
       JSON.stringify({
         v: 1,
@@ -160,7 +160,7 @@ describe("ws-router", () => {
       },
     })
 
-    router.handleMessage(
+    await router.handleMessage(
       ws as never,
       JSON.stringify({
         v: 1,
@@ -176,7 +176,7 @@ describe("ws-router", () => {
     })
   })
 
-  test("loads older chat history pages", () => {
+  test("loads older chat history pages", async () => {
     const state = createEmptyState()
     state.projectsById.set("project-1", {
       id: "project-1",
@@ -231,7 +231,7 @@ describe("ws-router", () => {
     })
     const ws = new FakeWebSocket()
 
-    router.handleMessage(
+    await router.handleMessage(
       ws as never,
       JSON.stringify({
         v: 1,
@@ -318,7 +318,7 @@ describe("ws-router", () => {
     router.handleOpen(wsA as never)
     router.handleOpen(wsB as never)
 
-    router.handleMessage(
+    await router.handleMessage(
       wsA as never,
       JSON.stringify({
         v: 1,
@@ -327,7 +327,7 @@ describe("ws-router", () => {
         topic: { type: "sidebar" },
       })
     )
-    router.handleMessage(
+    await router.handleMessage(
       wsB as never,
       JSON.stringify({
         v: 1,
@@ -337,7 +337,7 @@ describe("ws-router", () => {
       })
     )
 
-    router.handleMessage(
+    await router.handleMessage(
       wsA as never,
       JSON.stringify({
         v: 1,
@@ -346,8 +346,6 @@ describe("ws-router", () => {
         command: { type: "chat.markRead", chatId: "chat-1" },
       })
     )
-
-    await Promise.resolve()
 
     expect(wsA.sent.at(-2)).toEqual({
       v: PROTOCOL_VERSION,
@@ -402,6 +400,84 @@ describe("ws-router", () => {
               lastMessageAt: undefined,
               hasAutomation: false,
             }],
+          }],
+        },
+      },
+    })
+  })
+
+  test("prunes stale empty chats before sending sidebar snapshots", async () => {
+    const state = createEmptyState()
+    state.projectsById.set("project-1", {
+      id: "project-1",
+      localPath: "/tmp/project",
+      title: "Project",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    state.projectIdsByPath.set("/tmp/project", "project-1")
+    state.chatsById.set("chat-stale", {
+      id: "chat-stale",
+      projectId: "project-1",
+      title: "New Chat",
+      createdAt: 1,
+      updatedAt: 1,
+      unread: false,
+      provider: null,
+      planMode: false,
+      sessionToken: null,
+      lastError: null,
+      lastTurnOutcome: null,
+    })
+
+    let pruneCalls = 0
+    const router = createWsRouter({
+      store: {
+        state,
+        async pruneStaleEmptyChats() {
+          pruneCalls += 1
+          state.chatsById.delete("chat-stale")
+          return ["chat-stale"]
+        },
+      } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "subscribe",
+        id: "sidebar-sub-1",
+        topic: { type: "sidebar" },
+      })
+    )
+
+    expect(pruneCalls).toBe(1)
+    expect(ws.sent[0]).toEqual({
+      v: PROTOCOL_VERSION,
+      type: "snapshot",
+      id: "sidebar-sub-1",
+      snapshot: {
+        type: "sidebar",
+        data: {
+          projectGroups: [{
+            groupKey: "project-1",
+            localPath: "/tmp/project",
+            chats: [],
           }],
         },
       },
@@ -474,7 +550,7 @@ describe("ws-router", () => {
     })
     const ws = new FakeWebSocket()
 
-    router.handleMessage(
+    await router.handleMessage(
       ws as never,
       JSON.stringify({
         v: 1,
@@ -494,7 +570,7 @@ describe("ws-router", () => {
       },
     })
 
-    router.handleMessage(
+    await router.handleMessage(
       ws as never,
       JSON.stringify({
         v: 1,
@@ -513,7 +589,6 @@ describe("ws-router", () => {
       })
     )
 
-    await Promise.resolve()
     expect(ws.sent[1]).toEqual({
       v: PROTOCOL_VERSION,
       type: "ack",
@@ -578,7 +653,7 @@ describe("ws-router", () => {
     })
     const ws = new FakeWebSocket()
 
-    router.handleMessage(
+    await router.handleMessage(
       ws as never,
       JSON.stringify({
         v: 1,
@@ -598,7 +673,7 @@ describe("ws-router", () => {
       },
     })
 
-    router.handleMessage(
+    await router.handleMessage(
       ws as never,
       JSON.stringify({
         v: 1,
@@ -611,7 +686,6 @@ describe("ws-router", () => {
       })
     )
 
-    await Promise.resolve()
     expect(ws.sent[1]).toEqual({
       v: PROTOCOL_VERSION,
       type: "ack",

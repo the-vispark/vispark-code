@@ -27,7 +27,7 @@ export interface ClientState {
 interface CreateWsRouterArgs {
   store: EventStore
   settings?: AppSettingsStore
-  diffStore?: Pick<DiffStore, "getSnapshot" | "refreshSnapshot" | "listBranches" | "syncBranch" | "checkoutBranch" | "createBranch" | "generateCommitMessage" | "commitFiles" | "discardFile" | "ignoreFile">
+  diffStore?: Pick<DiffStore, "getSnapshot" | "refreshSnapshot" | "initializeGit" | "getGitHubPublishInfo" | "checkGitHubRepoAvailability" | "publishToGitHub" | "listBranches" | "syncBranch" | "checkoutBranch" | "createBranch" | "generateCommitMessage" | "commitFiles" | "discardFile" | "ignoreFile">
   agent: AgentCoordinator
   terminals: TerminalManager
   keybindings: KeybindingsManager
@@ -88,6 +88,10 @@ export function createWsRouter({
   const resolvedDiffStore = diffStore ?? {
     getSnapshot: () => ({ status: "unknown", branchName: undefined, defaultBranchName: undefined, originRepoSlug: undefined, hasUpstream: undefined, aheadCount: undefined, behindCount: undefined, lastFetchedAt: undefined, files: [] as const, branchHistory: { entries: [] as const } }),
     refreshSnapshot: async () => false,
+    initializeGit: async () => ({ ok: true, branchName: undefined, snapshotChanged: false }),
+    getGitHubPublishInfo: async () => ({ ghInstalled: false, authenticated: false, activeAccountLogin: undefined, owners: [], suggestedRepoName: "my-repo" }),
+    checkGitHubRepoAvailability: async () => ({ available: false, message: "Unavailable" }),
+    publishToGitHub: async () => ({ ok: false, title: "Publish failed", message: "Unavailable", snapshotChanged: false }),
     listBranches: async () => ({ recent: [], local: [], remote: [], pullRequests: [], pullRequestsStatus: "unavailable" as const }),
     syncBranch: async () => ({ ok: true, action: "fetch" as const, branchName: undefined, snapshotChanged: false }),
     checkoutBranch: async () => ({ ok: true, branchName: undefined, snapshotChanged: false }),
@@ -96,6 +100,19 @@ export function createWsRouter({
     commitFiles: async () => ({ ok: true, mode: "commit_only" as const, branchName: undefined, pushed: false, snapshotChanged: false }),
     discardFile: async () => ({ snapshotChanged: false }),
     ignoreFile: async () => ({ snapshotChanged: false }),
+  }
+
+  function getProtectedChatIds() {
+    return new Set([
+      ...agent.getActiveStatuses().keys(),
+      ...agent.getDrainingChatIds().values(),
+    ])
+  }
+
+  async function maybePruneStaleEmptyChats() {
+    await store.pruneStaleEmptyChats?.({
+      activeChatIds: getProtectedChatIds(),
+    })
   }
 
   function createEnvelope(id: string, topic: SubscriptionTopic): ServerEnvelope {
@@ -212,7 +229,10 @@ export function createWsRouter({
     }
   }
 
-  function pushSnapshots(ws: ServerWebSocket<ClientState>) {
+  async function pushSnapshots(ws: ServerWebSocket<ClientState>, options?: { skipPrune?: boolean }) {
+    if (!options?.skipPrune) {
+      await maybePruneStaleEmptyChats()
+    }
     const snapshotSignatures = ensureSnapshotSignatures(ws)
     for (const [id, topic] of ws.data.subscriptions.entries()) {
       const envelope = createEnvelope(id, topic)
@@ -226,9 +246,10 @@ export function createWsRouter({
     }
   }
 
-  function broadcastSnapshots() {
+  async function broadcastSnapshots() {
+    await maybePruneStaleEmptyChats()
     for (const ws of sockets) {
-      pushSnapshots(ws)
+      await pushSnapshots(ws, { skipPrune: true })
     }
   }
 
@@ -461,7 +482,51 @@ export function createWsRouter({
           const changed = await resolvedDiffStore.refreshSnapshot(command.chatId, project.localPath)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           if (changed) {
-            broadcastSnapshots()
+            void broadcastSnapshots()
+          }
+          return
+        }
+        case "chat.initGit": {
+          const { project } = resolveChatProject(command.chatId)
+          const result = await resolvedDiffStore.initializeGit({
+            chatId: command.chatId,
+            projectPath: project.localPath,
+          })
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          if (result.snapshotChanged) {
+            void broadcastSnapshots()
+          }
+          return
+        }
+        case "chat.getGitHubPublishInfo": {
+          const { project } = resolveChatProject(command.chatId)
+          const result = await resolvedDiffStore.getGitHubPublishInfo({
+            projectPath: project.localPath,
+          })
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          return
+        }
+        case "chat.checkGitHubRepoAvailability": {
+          const result = await resolvedDiffStore.checkGitHubRepoAvailability({
+            owner: command.owner,
+            name: command.name,
+          })
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          return
+        }
+        case "chat.publishToGitHub": {
+          const { project } = resolveChatProject(command.chatId)
+          const result = await resolvedDiffStore.publishToGitHub({
+            chatId: command.chatId,
+            projectPath: project.localPath,
+            owner: command.owner,
+            name: command.name,
+            visibility: command.visibility,
+            description: command.description,
+          })
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          if (result.snapshotChanged) {
+            void broadcastSnapshots()
           }
           return
         }
@@ -483,7 +548,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            broadcastSnapshots()
+            void broadcastSnapshots()
           }
           return
         }
@@ -496,7 +561,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            broadcastSnapshots()
+            void broadcastSnapshots()
           }
           return
         }
@@ -510,7 +575,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            broadcastSnapshots()
+            void broadcastSnapshots()
           }
           return
         }
@@ -535,7 +600,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            broadcastSnapshots()
+            void broadcastSnapshots()
           }
           return
         }
@@ -548,7 +613,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            broadcastSnapshots()
+            void broadcastSnapshots()
           }
           return
         }
@@ -561,7 +626,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            broadcastSnapshots()
+            void broadcastSnapshots()
           }
           return
         }
@@ -627,7 +692,7 @@ export function createWsRouter({
         }
       }
 
-      broadcastSnapshots()
+      await broadcastSnapshots()
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error)
       console.error("[ws-router] command failed", {
@@ -652,7 +717,7 @@ export function createWsRouter({
       sockets.delete(ws)
     },
     broadcastSnapshots,
-    handleMessage(ws: ServerWebSocket<ClientState>, raw: string | Buffer | ArrayBuffer | Uint8Array) {
+    async handleMessage(ws: ServerWebSocket<ClientState>, raw: string | Buffer | ArrayBuffer | Uint8Array) {
       let parsed: unknown
       try {
         parsed = JSON.parse(String(raw))
@@ -676,12 +741,12 @@ export function createWsRouter({
         if (parsed.topic.type === "local-projects") {
           void refreshDiscovery().then(() => {
             if (ws.data.subscriptions.has(parsed.id)) {
-              pushSnapshots(ws)
+              void pushSnapshots(ws)
             }
           })
           return
         }
-        pushSnapshots(ws)
+        await pushSnapshots(ws)
         return
       }
 
@@ -697,7 +762,7 @@ export function createWsRouter({
         return
       }
 
-      void handleCommand(ws, parsed)
+      await handleCommand(ws, parsed)
     },
     dispose() {
       agent.setBackgroundErrorReporter?.(null)

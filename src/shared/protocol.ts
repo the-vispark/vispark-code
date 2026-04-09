@@ -93,6 +93,17 @@ export type ClientCommand =
       planMode?: boolean
     }
   | { type: "chat.refreshDiffs"; chatId: string }
+  | { type: "chat.initGit"; chatId: string }
+  | { type: "chat.getGitHubPublishInfo"; chatId: string }
+  | { type: "chat.checkGitHubRepoAvailability"; chatId: string; owner: string; name: string }
+  | {
+      type: "chat.publishToGitHub"
+      chatId: string
+      owner: string
+      name: string
+      visibility: "public" | "private"
+      description?: string
+    }
   | { type: "chat.listBranches"; chatId: string }
   | { type: "chat.syncBranch"; chatId: string; action: "fetch" | "pull" | "push" | "publish" }
   | {

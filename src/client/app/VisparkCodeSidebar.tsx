@@ -6,6 +6,7 @@ import type { SidebarChatRow, SidebarData, UpdateSnapshot } from "../../shared/t
 import { ChatRow } from "../components/chat-ui/sidebar/ChatRow"
 import { LocalProjectsSection } from "../components/chat-ui/sidebar/LocalProjectsSection"
 import { Button } from "../components/ui/button"
+import { shouldDefaultCollapseSidebarProject } from "../lib/sidebarChats"
 import { useProjectGroupOrderStore } from "../stores/projectGroupOrderStore"
 import { cn } from "../lib/utils"
 import type { SocketStatus } from "./socket"
@@ -60,6 +61,7 @@ export function VisparkCodeSidebar({
   const location = useLocation()
   const navigate = useNavigate()
   const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const initializedCollapsedGroupKeysRef = useRef<Set<string>>(new Set())
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set())
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
   const [nowMs, setNowMs] = useState(() => Date.now())
@@ -98,6 +100,38 @@ export function VisparkCodeSidebar({
     () => data.projectGroups.reduce((count, group) => count + group.chats.length, 0),
     [data.projectGroups]
   )
+
+  useEffect(() => {
+    setCollapsedSections((previous) => {
+      const next = new Set<string>()
+      const projectKeys = new Set(orderedProjectGroups.map((group) => group.groupKey))
+      const initializedKeys = initializedCollapsedGroupKeysRef.current
+
+      for (const key of previous) {
+        if (projectKeys.has(key)) {
+          next.add(key)
+        }
+      }
+
+      initializedCollapsedGroupKeysRef.current = new Set(
+        [...initializedKeys].filter((key) => projectKeys.has(key))
+      )
+
+      for (const group of orderedProjectGroups) {
+        if (initializedCollapsedGroupKeysRef.current.has(group.groupKey)) continue
+        initializedCollapsedGroupKeysRef.current.add(group.groupKey)
+        if (shouldDefaultCollapseSidebarProject(group.chats, nowMs)) {
+          next.add(group.groupKey)
+        }
+      }
+
+      if (next.size === previous.size && [...next].every((key) => previous.has(key))) {
+        return previous
+      }
+
+      return next
+    })
+  }, [nowMs, orderedProjectGroups])
 
   const toggleSection = useCallback((key: string) => {
     setCollapsedSections((previous) => {
@@ -258,7 +292,7 @@ export function VisparkCodeSidebar({
                 navigate("/")
                 onClose()
               }}
-              className="size-10 rounded-lg"
+              className="size-10 rounded-lg hover:!border-border/0"
               title="New project"
             >
               <Plus className="size-4" />
@@ -317,6 +351,7 @@ export function VisparkCodeSidebar({
               onToggleExpandedGroup={toggleExpandedGroup}
               renderChatRow={renderChatRow}
               chatsPerProject={chatsPerProject}
+              nowMs={nowMs}
               onNewLocalChat={(localPath) => {
                 const projectId = projectIdByPath.get(localPath)
                 if (projectId) {

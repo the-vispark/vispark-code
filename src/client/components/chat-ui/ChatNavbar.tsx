@@ -1,4 +1,4 @@
-import { Code, FolderOpen, GitCompare, Menu, PanelLeft, SquarePen, Terminal } from "lucide-react"
+import { Code, FolderOpen, GitBranch, Menu, PanelLeft, PanelRight, SquarePen, Terminal } from "lucide-react"
 import { Button } from "../ui/button"
 import { CardHeader } from "../ui/card"
 import { HotkeyTooltip, HotkeyTooltipContent, HotkeyTooltipTrigger } from "../ui/tooltip"
@@ -24,6 +24,9 @@ interface Props {
   editorShortcut?: string[]
   terminalShortcut?: string[]
   rightSidebarShortcut?: string[]
+  branchName?: string
+  hasGitRepo?: boolean
+  gitStatus?: "unknown" | "ready" | "no_repo"
 }
 
 export function ChatNavbar({
@@ -42,7 +45,16 @@ export function ChatNavbar({
   editorShortcut,
   terminalShortcut,
   rightSidebarShortcut,
+  branchName,
+  hasGitRepo = true,
+  gitStatus = "unknown",
 }: Props) {
+  const branchLabel = !hasGitRepo
+    ? "Setup Git"
+    : gitStatus === "unknown"
+      ? null
+      : (branchName ?? "Detached HEAD")
+
   return (
     <CardHeader
       className={cn(
@@ -80,6 +92,7 @@ export function ChatNavbar({
           <Button
             variant="ghost"
             size="icon"
+            className="hover:!border-border/0 hover:!bg-transparent"
             onClick={onNewChat}
             title="Compose"
           >
@@ -89,20 +102,21 @@ export function ChatNavbar({
 
         <div className="flex-1 min-w-0" />
 
-        <div className="flex items-center gap-1 flex-shrink-0 border border-border rounded-full px-1.5 py-1 backdrop-blur-lg">
-          {localPath && (onOpenExternal || onToggleEmbeddedTerminal) && (
-            <>
+        {localPath && (onOpenExternal || onToggleEmbeddedTerminal || onToggleRightSidebar) ? (
+          <div className="flex items-center  flex-shrink-0 border border-border rounded-full px-2 py-1 backdrop-blur-lg">
+            {(onOpenExternal || onToggleEmbeddedTerminal) ? (
+              <>
               {onOpenExternal ? (
                 <HotkeyTooltip>
                   <HotkeyTooltipTrigger asChild>
                     <Button
                       variant="ghost"
-                      size="icon"
+                      size="none"
                       onClick={() => onOpenExternal("open_finder")}
                       title="Open in Finder"
-                      className="border border-border/0"
+                      className="border border-border/0 hover:!border-border/0 pl-2 pr-1.5 h-9 hover:!bg-transparent"
                     >
-                      <FolderOpen className="h-4.5 w-4.5" />
+                      <FolderOpen strokeWidth={2} className="h-4.5" />
                     </Button>
                   </HotkeyTooltipTrigger>
                   <HotkeyTooltipContent side="bottom" shortcut={finderShortcut} />
@@ -113,14 +127,14 @@ export function ChatNavbar({
                   <HotkeyTooltipTrigger asChild>
                     <Button
                       variant="ghost"
-                      size="icon"
+                      size="none"
                       onClick={onToggleEmbeddedTerminal}
                       className={cn(
-                        "border border-border/0",
+                        "border border-border/0 hover:!border-border/0 px-1.5 h-9 hover:!bg-transparent",
                         embeddedTerminalVisible && "text-foreground"
                       )}
                     >
-                      <Terminal className="h-4.5 w-4.5" />
+                      <Terminal strokeWidth={2} className="h-4.5" />
                     </Button>
                   </HotkeyTooltipTrigger>
                   <HotkeyTooltipContent side="bottom" shortcut={terminalShortcut} />
@@ -131,38 +145,39 @@ export function ChatNavbar({
                   <HotkeyTooltipTrigger asChild>
                     <Button
                       variant="ghost"
-                      size="icon"
+                      size="none"
                       onClick={() => onOpenExternal("open_editor")}
                       title={`Open in ${editorLabel}`}
-                      className="border border-border/0"
+                      className="border border-border/0 hover:!border-border/0 px-1.5 h-9 hover:!bg-transparent"
                     >
-                      <Code className="h-4.5 w-4.5" />
+                      <Code strokeWidth={2} className="h-4.5" />
                     </Button>
                   </HotkeyTooltipTrigger>
                   <HotkeyTooltipContent side="bottom" shortcut={editorShortcut} />
                 </HotkeyTooltip>
               ) : null}
-            </>
-          )}
-          {onToggleRightSidebar ? (
-            <HotkeyTooltip>
-              <HotkeyTooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={onToggleRightSidebar}
-                  className={cn(
-                    "border border-border/0",
-                    rightSidebarVisible && "text-foreground"
-                  )}
-                >
-                  <GitCompare className="h-4.5 w-4.5" />
-                </Button>
-              </HotkeyTooltipTrigger>
-              <HotkeyTooltipContent side="bottom" shortcut={rightSidebarShortcut} />
-            </HotkeyTooltip>
-          ) : null}
-        </div>
+              </>
+            ) : null}
+            {onToggleRightSidebar ? (
+              <HotkeyTooltip>
+                <HotkeyTooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    onClick={onToggleRightSidebar}
+                    className={cn(
+                      "border flex flex-row items-center gap-1.5 h-9 border-border/0 pl-1.5 pr-2 hover:!border-border/0 hover:!bg-transparent",
+                      rightSidebarVisible && "text-foreground"
+                    )}
+                  >
+                    {rightSidebarVisible ? <PanelRight strokeWidth={2.25} className="h-4" /> : <GitBranch strokeWidth={2.25} className="h-4" />}
+                    {branchLabel && !rightSidebarVisible ? <div className="font-[13px] max-w-[140px] truncate hidden md:block">{branchLabel}</div> : null}
+                  </Button>
+                </HotkeyTooltipTrigger>
+                <HotkeyTooltipContent side="bottom" shortcut={rightSidebarShortcut} />
+              </HotkeyTooltip>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </CardHeader>
   )

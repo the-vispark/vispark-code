@@ -1,5 +1,5 @@
 import { PatchDiff } from "@pierre/diffs/react"
-import { ArrowUp, Ban, Check, ChevronDown, ChevronUp, Code, Columns2, Copy, Download, Ellipsis, GitBranch, GitPullRequest, LoaderCircle, Minus, RefreshCw, Rows3, Search, Trash2, Upload, WrapText } from "lucide-react"
+import { AlertTriangle, ArrowUp, Ban, Building2, Check, ChevronDown, ChevronUp, Code, Columns2, Copy, Download, Ellipsis, FileText, GitBranch, GitPullRequest, Github, Globe, LoaderCircle, Lock, Minus, PencilLine, RefreshCw, Rows3, Search, Trash2, Upload, UserRound, WrapText } from "lucide-react"
 import { ExternalLink, SquareArrowRight, SquareDot, SquareMinus, SquarePlus } from "lucide-react"
 import { memo, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from "react"
 import type {
@@ -10,6 +10,8 @@ import type {
   ChatDiffSnapshot,
   DiffCommitMode,
   DiffCommitResult,
+  GitHubPublishInfo,
+  GitHubRepoAvailabilityResult,
 } from "../../../shared/types"
 import { useStickyState } from "../../hooks/useStickyState"
 import { cn } from "../../lib/utils"
@@ -19,9 +21,11 @@ import { AttachmentPreviewModal } from "../messages/AttachmentPreviewModal"
 import { classifyAttachmentPreview } from "../messages/attachmentPreview"
 import { Button } from "../ui/button"
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "../ui/context-menu"
+import { Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogTitle } from "../ui/dialog"
 import { Input } from "../ui/input"
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover"
 import { SegmentedControl } from "../ui/segmented-control"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select"
 import { Textarea } from "../ui/textarea"
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip"
 
@@ -69,6 +73,10 @@ interface RightSidebarProps extends DiffFileActions {
   onCheckoutBranch: (branch: ChatBranchListEntry) => Promise<void>
   onCreateBranch: () => Promise<void>
   onGenerateCommitMessage: (args: { paths: string[] }) => Promise<{ subject: string; body: string }>
+  onInitializeGit?: () => Promise<unknown>
+  onGetGitHubPublishInfo?: () => Promise<GitHubPublishInfo>
+  onCheckGitHubRepoAvailability?: (args: { owner: string; name: string }) => Promise<GitHubRepoAvailabilityResult>
+  onSetupGitHub?: (args: { owner: string; name: string; visibility: "public" | "private"; description: string }) => Promise<unknown>
   onCommit: (args: { paths: string[]; summary: string; description: string; mode: DiffCommitMode }) => Promise<DiffCommitResult | null>
   onSyncWithRemote: (action: "fetch" | "pull" | "push" | "publish") => Promise<unknown>
   onDiffRenderModeChange: (mode: DiffRenderMode) => void
@@ -197,24 +205,12 @@ function formatRelativeTime(isoTimestamp: string) {
   const month = 30 * day
   const year = 365 * day
 
-  if (diffMs < minute) {
-    return "just now"
-  }
-  if (diffMs < hour) {
-    return `${Math.round(diffMs / minute)}m ago`
-  }
-  if (diffMs < day) {
-    return `${Math.round(diffMs / hour)}hr ago`
-  }
-  if (diffMs < week) {
-    return `${Math.round(diffMs / day)}d ago`
-  }
-  if (diffMs < month) {
-    return `${Math.round(diffMs / week)}wk ago`
-  }
-  if (diffMs < year) {
-    return `${Math.round(diffMs / month)}mo ago`
-  }
+  if (diffMs < minute) return "just now"
+  if (diffMs < hour) return `${Math.round(diffMs / minute)}m ago`
+  if (diffMs < day) return `${Math.round(diffMs / hour)}hr ago`
+  if (diffMs < week) return `${Math.round(diffMs / day)}d ago`
+  if (diffMs < month) return `${Math.round(diffMs / week)}wk ago`
+  if (diffMs < year) return `${Math.round(diffMs / month)}mo ago`
   return `${Math.round(diffMs / year)}yr ago`
 }
 
@@ -275,6 +271,255 @@ function CommitHistoryRow({ entry, isPendingPush = false }: { entry: ChatBranchH
         </div>
       ) : null}
     </button>
+  )
+}
+
+function GitHubPublishModal({
+  open,
+  onOpenChange,
+  onGetGitHubPublishInfo,
+  onCheckGitHubRepoAvailability,
+  onPublish,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onGetGitHubPublishInfo: NonNullable<RightSidebarProps["onGetGitHubPublishInfo"]>
+  onCheckGitHubRepoAvailability: NonNullable<RightSidebarProps["onCheckGitHubRepoAvailability"]>
+  onPublish: NonNullable<RightSidebarProps["onSetupGitHub"]>
+}) {
+  const [info, setInfo] = useState<GitHubPublishInfo | null>(null)
+  const [isLoadingInfo, setIsLoadingInfo] = useState(false)
+  const [owner, setOwner] = useState("")
+  const [name, setName] = useState("")
+  const [visibility, setVisibility] = useState<"public" | "private">("private")
+  const [description, setDescription] = useState("")
+  const [availability, setAvailability] = useState<GitHubRepoAvailabilityResult | null>(null)
+  const [isCheckingAvailability, setIsCheckingAvailability] = useState(false)
+  const [isPublishing, setIsPublishing] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    setIsLoadingInfo(true)
+    setAvailability(null)
+    void onGetGitHubPublishInfo()
+      .then((result) => {
+        if (cancelled) return
+        setInfo(result)
+        setOwner(result.owners[0] ?? result.activeAccountLogin ?? "")
+        setName(result.suggestedRepoName)
+        setVisibility("private")
+        setDescription("")
+      })
+      .finally(() => {
+        if (cancelled) return
+        setIsLoadingInfo(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [onGetGitHubPublishInfo, open])
+
+  useEffect(() => {
+    if (!open || !info?.ghInstalled || !info.authenticated) return
+
+    const trimmedOwner = owner.trim()
+    const trimmedName = name.trim()
+    if (!trimmedOwner || !trimmedName) {
+      setAvailability(null)
+      return
+    }
+
+    let cancelled = false
+    setIsCheckingAvailability(true)
+    const timeoutId = window.setTimeout(() => {
+      void onCheckGitHubRepoAvailability({ owner: trimmedOwner, name: trimmedName })
+        .then((result) => {
+          if (cancelled) return
+          setAvailability(result)
+        })
+        .finally(() => {
+          if (cancelled) return
+          setIsCheckingAvailability(false)
+        })
+    }, 250)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timeoutId)
+    }
+  }, [info?.authenticated, info?.ghInstalled, name, onCheckGitHubRepoAvailability, open, owner])
+
+  async function handlePublish() {
+    if (!owner.trim() || !name.trim()) return
+    setIsPublishing(true)
+    try {
+      const result = await onPublish({
+        owner: owner.trim(),
+        name: name.trim(),
+        visibility,
+        description,
+      })
+      if ((result as { ok?: boolean } | null)?.ok) {
+        onOpenChange(false)
+      }
+    } finally {
+      setIsPublishing(false)
+    }
+  }
+
+  const canPublish = Boolean(
+    info?.ghInstalled
+    && info.authenticated
+    && owner.trim()
+    && name.trim()
+    && availability?.available
+    && !isCheckingAvailability
+    && !isPublishing
+  )
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent size="sm" className="max-w-[min(92vw,475px)]">
+        <DialogBody className="space-y-2 px-4 pb-4 pt-4">
+          <div className="space-y-1">
+            <DialogTitle>Push to GitHub</DialogTitle>
+            <DialogDescription>Create a GitHub repository from this local project using GitHub CLI.</DialogDescription>
+          </div>
+          {isLoadingInfo ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <LoaderCircle className="size-4 animate-spin" />
+              <span>Checking GitHub CLI...</span>
+            </div>
+          ) : info && !info.ghInstalled ? (
+            <div className="space-y-2 text-sm text-muted-foreground">
+              <p>GitHub CLI is not installed.</p>
+              <div className="rounded-lg border border-border px-3 py-2 font-mono text-xs text-foreground">
+                brew install gh
+              </div>
+              <p>Then run:</p>
+              <div className="rounded-lg border border-border px-3 py-2 font-mono text-xs text-foreground">
+                gh auth login
+              </div>
+            </div>
+          ) : info && !info.authenticated ? (
+            <div className="space-y-2 text-sm text-muted-foreground">
+              <p>GitHub CLI is installed but not signed in.</p>
+              <div className="rounded-lg border border-border px-3 py-2 font-mono text-xs text-foreground">
+                gh auth login
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="space-y-2">
+                <Select value={owner} onValueChange={setOwner}>
+                  <SelectTrigger className="pl-[11px] [&>span]:flex [&>span]:items-center [&>span]:gap-2">
+                    <SelectValue placeholder="Select owner" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(info?.owners ?? []).map((candidate) => (
+                      <SelectItem key={candidate} value={candidate}>
+                        <span className="flex items-center gap-2">
+                          {candidate === info?.activeAccountLogin ? (
+                            <UserRound className="size-4 text-muted-foreground" />
+                          ) : (
+                            <Building2 className="size-4 text-muted-foreground" />
+                          )}
+                          <span className="pl-[1px]">{candidate}</span>
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <div className="relative">
+                  <Input
+                    value={name}
+                    onChange={(event) => setName(event.target.value)}
+                    placeholder="my-repo"
+                    className="pl-9 pr-10"
+                  />
+                  <PencilLine className="pointer-events-none absolute inset-y-0 left-3 my-auto size-4 text-muted-foreground" />
+                  {isCheckingAvailability ? (
+                    <div className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-muted-foreground">
+                      <LoaderCircle className="size-4 animate-spin" />
+                    </div>
+                  ) : availability ? (
+                    <div className="absolute inset-y-0 right-2 flex items-center">
+                      <Tooltip delayDuration={0}>
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            tabIndex={-1}
+                            aria-label={availability.message}
+                            className={cn(
+                              "flex size-6 items-center justify-center rounded-md",
+                              availability.available ? "text-emerald-600 dark:text-emerald-400" : "text-destructive"
+                            )}
+                          >
+                            {availability.available ? <Check className="size-4" /> : <AlertTriangle className="size-4" />}
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent>{availability.message}</TooltipContent>
+                      </Tooltip>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+              <div className="space-y-2">
+                <div className="relative">
+                  <FileText className="pointer-events-none absolute left-3 top-3 size-4 text-muted-foreground" />
+                  <Textarea
+                    value={description}
+                    onChange={(event) => setDescription(event.target.value)}
+                    rows={3}
+                    placeholder="Optional description"
+                    className="pl-9 outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0"
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Select value={visibility} onValueChange={(value) => setVisibility(value as "public" | "private")}>
+                  <SelectTrigger className="pl-[11px] [&>span]:flex [&>span]:items-center [&>span]:gap-2">
+                    <SelectValue placeholder="Select visibility" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="private">
+                      <span className="flex items-center gap-2">
+                        <Lock className="size-4 text-muted-foreground" />
+                        <span className="pl-[1px]">Private</span>
+                      </span>
+                    </SelectItem>
+                    <SelectItem value="public">
+                      <span className="flex items-center gap-2">
+                        <Globe className="size-4 text-muted-foreground" />
+                        <span className="pl-[1px]">Public</span>
+                      </span>
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </>
+          )}
+        </DialogBody>
+        <DialogFooter>
+          <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button size="sm" disabled={!canPublish} onClick={() => void handlePublish()}>
+            {isPublishing ? (
+              <>
+                <LoaderCircle className="mr-1.5 size-3.5 animate-spin" />
+                Publishing...
+              </>
+            ) : (
+              "Push to GitHub"
+            )}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -360,9 +605,7 @@ function BranchSwitcher({
     entries: ChatBranchListEntry[]
     emptyLabel?: string
   }) {
-    if (entries.length === 0 && !emptyLabel) {
-      return null
-    }
+    if (entries.length === 0 && !emptyLabel) return null
 
     return (
       <div className="space-y-1">
@@ -395,9 +638,7 @@ function BranchSwitcher({
                   ) : null}
                 </div>
                 {entry.kind === "pull_request" && entry.description ? (
-                  <div className="truncate text-xs text-muted-foreground">
-                    {entry.description}
-                  </div>
+                  <div className="truncate text-xs text-muted-foreground">{entry.description}</div>
                 ) : null}
               </div>
             </button>
@@ -440,7 +681,7 @@ function BranchSwitcher({
           {isLoading ? (
             <div className="flex items-center justify-center gap-2 py-6 text-sm text-muted-foreground">
               <LoaderCircle className="h-4 w-4 animate-spin" />
-              <span>Loading branches…</span>
+              <span>Loading branches...</span>
             </div>
           ) : error ? (
             <div className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground">{error}</div>
@@ -556,7 +797,7 @@ function DiffFileCard({
                   onToggleChecked()
                 }}
               />
-              <div className="min-w-0 truncate select-none ml-2 mr-1">{file.path}</div>
+              <div className="ml-2 mr-1 min-w-0 truncate select-none">{file.path}</div>
               <button
                 type="button"
                 aria-label={`Open ${file.path} in editor`}
@@ -570,7 +811,7 @@ function DiffFileCard({
                 <ExternalLink className="h-3 w-3 shrink-0" />
               </button>
             </div>
-            <div className="flex shrink-0 items-center gap-2 select-none">
+            <div className="flex shrink-0 select-none items-center gap-2">
               <span className="whitespace-nowrap text-xs font-mono">
                 {counts.additions > 0 ? <span className="text-emerald-600 dark:text-emerald-400">+{counts.additions}</span> : null}
                 {counts.deletions > 0 ? (
@@ -596,15 +837,9 @@ function DiffFileCard({
               {previewAttachment ? (
                 <div className="flex justify-center p-3">
                   {previewAttachment.kind === "image" ? (
-                    <AttachmentImageCard
-                      attachment={previewAttachment}
-                      onClick={() => handleAttachmentClick(previewAttachment)}
-                    />
+                    <AttachmentImageCard attachment={previewAttachment} onClick={() => handleAttachmentClick(previewAttachment)} />
                   ) : (
-                    <AttachmentFileCard
-                      attachment={previewAttachment}
-                      onClick={() => handleAttachmentClick(previewAttachment)}
-                    />
+                    <AttachmentFileCard attachment={previewAttachment} onClick={() => handleAttachmentClick(previewAttachment)} />
                   )}
                 </div>
               ) : (
@@ -698,6 +933,10 @@ function RightSidebarImpl({
   onCheckoutBranch,
   onCreateBranch,
   onGenerateCommitMessage,
+  onInitializeGit,
+  onGetGitHubPublishInfo,
+  onCheckGitHubRepoAvailability,
+  onSetupGitHub,
   onCommit,
   onSyncWithRemote,
   onDiffRenderModeChange,
@@ -721,6 +960,7 @@ function RightSidebarImpl({
   const [isGenerating, setIsGenerating] = useState(false)
   const [commitModeInFlight, setCommitModeInFlight] = useState<DiffCommitMode | null>(null)
   const [isSyncing, setIsSyncing] = useState(false)
+  const [isGitHubPublishModalOpen, setIsGitHubPublishModalOpen] = useState(false)
   const scrollContainerRef = useRef<HTMLDivElement | null>(null)
   const filePaths = useMemo(() => diffs.files.map((file) => file.path), [diffs.files])
   const filePathsKey = useMemo(() => filePaths.join("\u0000"), [filePaths])
@@ -777,6 +1017,18 @@ function RightSidebarImpl({
   const aheadCount = diffs.aheadCount ?? 0
   const isPublishedBranch = diffs.hasUpstream === true
   const isPublishableBranch = diffs.hasUpstream === false && Boolean(diffs.branchName)
+  const hasRemoteOrigin = Boolean(diffs.originRepoSlug)
+  const getGitHubPublishInfo = onGetGitHubPublishInfo ?? (async () => ({
+    ghInstalled: false,
+    authenticated: false,
+    owners: [],
+    suggestedRepoName: "my-repo",
+  }))
+  const checkGitHubRepoAvailability = onCheckGitHubRepoAvailability ?? (async () => ({
+    available: false,
+    message: "GitHub publishing is unavailable.",
+  }))
+  const setupGitHub = onSetupGitHub ?? (async () => ({ ok: false }))
   const encodedBranchName = diffs.branchName
     ? diffs.branchName.split("/").map((segment) => encodeURIComponent(segment)).join("/")
     : null
@@ -794,13 +1046,8 @@ function RightSidebarImpl({
     && diffs.branchName
     && diffs.branchName !== diffs.defaultBranchName
   )
-  const canGenerate = diffs.status === "ready"
-    && selectedCount > 0
-    && !isBusy
-  const canCommit = diffs.status === "ready"
-    && selectedCount > 0
-    && hasSummary
-    && !isBusy
+  const canGenerate = diffs.status === "ready" && selectedCount > 0 && !isBusy
+  const canCommit = diffs.status === "ready" && selectedCount > 0 && hasSummary && !isBusy
   const primaryCommitMode: DiffCommitMode = diffs.hasUpstream ? "commit_and_push" : "commit_only"
 
   async function handleCommit(mode: DiffCommitMode) {
@@ -869,7 +1116,17 @@ function RightSidebarImpl({
             />
           </div>
           {diffs.status === "ready" ? (
-            syncAction === "publish" ? (
+            !hasRemoteOrigin ? (
+              <Button
+                variant="default"
+                size="sm"
+                onClick={() => setIsGitHubPublishModalOpen(true)}
+                className="h-7 gap-1.5 px-3 text-xs"
+              >
+                <Github className="h-3.5 w-3.5" />
+                <span>Push to GitHub</span>
+              </Button>
+            ) : syncAction === "publish" ? (
               <Button
                 variant="ghost"
                 size="sm"
@@ -948,8 +1205,8 @@ function RightSidebarImpl({
         </div>
         <div className="relative min-h-0 flex-1">
           <div className="sticky top-0 z-30 pl-[14px] pr-[12px] pt-[6px] bg-gradient-to-b from-background to-transparent">
-            <div className="relative h-[40px]  flex min-w-0 items-center justify-center gap-[13px]">
-              <div className="flex min-w-0 flex-1 items-center justify-between gap-[13px] relative">
+            <div className="relative flex h-[40px] min-w-0 items-center justify-center gap-[13px]">
+              <div className="relative flex min-w-0 flex-1 items-center justify-between gap-[13px]">
                 {viewMode === "changes" ? (
                   <div className="flex items-center gap-2 text-[11px] text-muted-foreground/70">
                     <StageCheckbox
@@ -970,7 +1227,7 @@ function RightSidebarImpl({
                     <span>{selectedCount} files</span>
                   </div>
                 ) : <div />}
-                <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 top-1/2 -translate-y-1/2">
+                <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
                   <div className="pointer-events-auto">
                     <SegmentedControl
                       value={viewMode}
@@ -978,7 +1235,7 @@ function RightSidebarImpl({
                       size="sm"
                       optionClassName="flex-1 justify-center"
                       options={[
-                        { value: "changes", label: "Changes"},
+                        { value: "changes", label: "Changes" },
                         { value: "history", label: "History" },
                       ]}
                     />
@@ -986,18 +1243,10 @@ function RightSidebarImpl({
                 </div>
                 {viewMode === "changes" ? (
                   <div className="flex items-center gap-1">
-                    <IconButton
-                      label="Unified diff"
-                      active={diffRenderMode === "unified"}
-                      onClick={() => onDiffRenderModeChange("unified")}
-                    >
+                    <IconButton label="Unified diff" active={diffRenderMode === "unified"} onClick={() => onDiffRenderModeChange("unified")}>
                       <Rows3 className="h-4 w-4" />
                     </IconButton>
-                    <IconButton
-                      label="Side-by-side diff"
-                      active={diffRenderMode === "split"}
-                      onClick={() => onDiffRenderModeChange("split")}
-                    >
+                    <IconButton label="Side-by-side diff" active={diffRenderMode === "split"} onClick={() => onDiffRenderModeChange("split")}>
                       <Columns2 className="h-4 w-4" />
                     </IconButton>
                     <IconButton
@@ -1015,7 +1264,14 @@ function RightSidebarImpl({
           <div ref={scrollContainerRef} className="h-full overflow-y-auto [scrollbar-gutter:stable]">
             {diffs.status === "no_repo" ? (
               <div className="flex h-full items-center justify-center px-6 py-3 text-center">
-                <p className="text-sm text-muted-foreground">Open a git repo to view current file diffs.</p>
+                <div className="flex max-w-[280px] flex-col items-center gap-3">
+                  <p className="text-sm text-muted-foreground">Initialize git here to start tracking branches, diffs, and history.</p>
+                  {onInitializeGit ? (
+                    <Button size="sm" onClick={() => void onInitializeGit()}>
+                      Init Git
+                    </Button>
+                  ) : null}
+                </div>
               </div>
             ) : viewMode === "history" ? (
               branchHistory.length === 0 ? (
@@ -1060,75 +1316,83 @@ function RightSidebarImpl({
               </div>
             )}
           </div>
-          
           {viewMode === "changes" ? (
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 p-3 pt-14 overflow-y-auto [scrollbar-gutter:stable]">
-            <div className="absolute inset-x-0 bottom-0 top-0 bg-gradient-to-t from-background to-transparent" />
-            <div className="pointer-events-auto relative mx-auto max-w-[550px]">
-              <div className="space-y-0 rounded-xl bg-background">
-                <Input
-                  value={summary}
-                  onChange={(event) => {
-                    setSummary(event.target.value)
-                  }}
-                  onKeyDown={handleCommitKeyDown}
-                  placeholder="Commit message (override)"
-                  className="rounded-t-xl rounded-b-none px-3"
-                  disabled={isBusy || diffs.status !== "ready"}
-                />
-                <Textarea
-                  value={description}
-                  onChange={(event) => setDescription(event.target.value)}
-                  onKeyDown={handleCommitKeyDown}
-                  placeholder="Description"
-                  rows={3}
-                  className="-mt-px rounded-t-none rounded-b-xl px-3 outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:border-border mb-2"
-                  disabled={isBusy || diffs.status !== "ready"}
-                />
-                <ContextMenu>
-                  <ContextMenuTrigger asChild>
-                    <Button
-                      type="button"
-                      className="-mt-px w-full rounded-xl "
-                      disabled={hasSummary ? !canCommit : !canGenerate}
-                      onClick={() => {
-                        if (hasSummary) {
-                          void handleCommit(primaryCommitMode)
-                          return
-                        }
-                        void handleGenerate()
-                      }}
-                    >
-                      {hasSummary
-                        ? (isCommitting
-                          ? (commitModeInFlight === "commit_only" ? "Committing..." : "Committing & Pushing...")
-                          : diffs.hasUpstream
-                            ? `Commit & Push ${selectedCount} ${selectedCount === 1 ? "file" : "files"} to ${diffs.branchName ?? "current branch"}`
-                            : `Commit ${selectedCount} ${selectedCount === 1 ? "file" : "files"} to ${diffs.branchName ?? "current branch"}`)
-                        : (isGenerating
-                          ? "Generating..."
-                          : `Generate message for ${selectedCount} ${selectedCount === 1 ? "file" : "files"} on ${diffs.branchName ?? "current branch"}`)}
-                    </Button>
-                  </ContextMenuTrigger>
-                  {diffs.hasUpstream ? (
-                    <ContextMenuContent>
-                      <ContextMenuItem
-                        disabled={!hasSummary || !canCommit}
-                        onSelect={(event) => {
-                          event.stopPropagation()
-                          void handleCommit("commit_only")
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 overflow-y-auto p-3 pt-14 [scrollbar-gutter:stable]">
+              <div className="absolute inset-x-0 bottom-0 top-0 bg-gradient-to-t from-background to-transparent" />
+              <div className="pointer-events-auto relative mx-auto max-w-[550px]">
+                <div className="space-y-0 rounded-xl bg-background">
+                  <Input
+                    value={summary}
+                    onChange={(event) => {
+                      setSummary(event.target.value)
+                    }}
+                    onKeyDown={handleCommitKeyDown}
+                    placeholder="Commit message (override)"
+                    className="rounded-t-xl rounded-b-none px-3"
+                    disabled={isBusy || diffs.status !== "ready"}
+                  />
+                  <Textarea
+                    value={description}
+                    onChange={(event) => setDescription(event.target.value)}
+                    onKeyDown={handleCommitKeyDown}
+                    placeholder="Description"
+                    rows={3}
+                    className="-mt-px mb-2 rounded-b-xl rounded-t-none px-3 outline-none focus:outline-none focus-visible:border-border focus-visible:outline-none focus:ring-0 focus-visible:ring-0"
+                    disabled={isBusy || diffs.status !== "ready"}
+                  />
+                  <ContextMenu>
+                    <ContextMenuTrigger asChild>
+                      <Button
+                        type="button"
+                        className="-mt-px w-full rounded-xl"
+                        disabled={hasSummary ? !canCommit : !canGenerate}
+                        onClick={() => {
+                          if (hasSummary) {
+                            void handleCommit(primaryCommitMode)
+                            return
+                          }
+                          void handleGenerate()
                         }}
                       >
-                        Commit Only
-                      </ContextMenuItem>
-                    </ContextMenuContent>
-                  ) : null}
-                </ContextMenu>
+                        {hasSummary
+                          ? (isCommitting
+                            ? (commitModeInFlight === "commit_only" ? "Committing..." : "Committing & Pushing...")
+                            : diffs.hasUpstream
+                              ? `Commit & Push ${selectedCount} ${selectedCount === 1 ? "file" : "files"} to ${diffs.branchName ?? "current branch"}`
+                              : `Commit ${selectedCount} ${selectedCount === 1 ? "file" : "files"} to ${diffs.branchName ?? "current branch"}`)
+                          : (isGenerating
+                            ? "Generating..."
+                            : `Generate message for ${selectedCount} ${selectedCount === 1 ? "file" : "files"} on ${diffs.branchName ?? "current branch"}`)}
+                      </Button>
+                    </ContextMenuTrigger>
+                    {diffs.hasUpstream ? (
+                      <ContextMenuContent>
+                        <ContextMenuItem
+                          disabled={!hasSummary || !canCommit}
+                          onSelect={(event) => {
+                            event.stopPropagation()
+                            void handleCommit("commit_only")
+                          }}
+                        >
+                          Commit Only
+                        </ContextMenuItem>
+                      </ContextMenuContent>
+                    ) : null}
+                  </ContextMenu>
+                </div>
               </div>
-            </div>
             </div>
           ) : null}
         </div>
+        {!hasRemoteOrigin ? (
+          <GitHubPublishModal
+            open={isGitHubPublishModalOpen}
+            onOpenChange={setIsGitHubPublishModalOpen}
+            onGetGitHubPublishInfo={getGitHubPublishInfo}
+            onCheckGitHubRepoAvailability={checkGitHubRepoAvailability}
+            onPublish={setupGitHub}
+          />
+        ) : null}
       </div>
     </div>
   )

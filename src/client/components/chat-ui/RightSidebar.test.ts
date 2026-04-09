@@ -134,7 +134,7 @@ describe("RightSidebar", () => {
     expect(markup).toContain("Open branch switcher")
   })
 
-  test("shows publish branch for an unpublished local branch", () => {
+  test("shows push to github for an unpublished local branch without a remote", () => {
     const markup = renderToStaticMarkup(createElement(
       TooltipProvider,
       null,
@@ -168,7 +168,7 @@ describe("RightSidebar", () => {
       })
     ))
 
-    expect(markup).toContain("Publish Branch")
+    expect(markup).toContain("Push to GitHub")
     expect(markup).not.toContain("PR")
   })
 
