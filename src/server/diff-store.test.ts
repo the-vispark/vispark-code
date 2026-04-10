@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { appendGitIgnoreEntry, DiffStore, extractGitHubRepoSlug, fetchGitHubPullRequests } from "./diff-store"
@@ -28,6 +28,12 @@ async function createRepo() {
   await run(["git", "init"], root)
   await run(["git", "config", "user.email", "vispark-code@example.com"], root)
   await run(["git", "config", "user.name", "Vispark Code"], root)
+  return root
+}
+
+async function createBareRemote() {
+  const root = await mkdtemp(path.join(tmpdir(), "vispark-code-diff-remote-"))
+  await run(["git", "init", "--bare"], root)
   return root
 }
 
@@ -108,6 +114,84 @@ describe("DiffStore", () => {
     expect(lastMessage).toBe("Update app\n\nOnly app changes")
   })
 
+  test("commit_and_push publishes an unpublished branch", async () => {
+    const repoRoot = await createRepo()
+    const remoteRoot = await createBareRemote()
+    tempDirs.push(repoRoot, remoteRoot)
+    await run(["git", "remote", "add", "origin", remoteRoot], repoRoot)
+    await writeFile(path.join(repoRoot, "app.txt"), "base\n", "utf8")
+    await run(["git", "add", "."], repoRoot)
+    await run(["git", "commit", "-m", "init"], repoRoot)
+    await run(["git", "switch", "-c", "feature/publish-me"], repoRoot)
+    await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
+
+    const store = new DiffStore(repoRoot)
+    await store.initialize()
+    await store.refreshSnapshot("chat-1", repoRoot)
+
+    const result = await store.commitFiles({
+      chatId: "chat-1",
+      projectPath: repoRoot,
+      paths: ["app.txt"],
+      summary: "Publish branch",
+      description: "",
+      mode: "commit_and_push",
+    })
+
+    expect(result).toMatchObject({
+      ok: true,
+      mode: "commit_and_push",
+      pushed: true,
+    })
+    expect((await run(["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], repoRoot)).trim()).toBe("origin/feature/publish-me")
+  })
+
+  test("commit_and_push degrades to a local commit when origin is missing", async () => {
+    const repoRoot = await createRepo()
+    tempDirs.push(repoRoot)
+    await writeFile(path.join(repoRoot, "app.txt"), "base\n", "utf8")
+    await run(["git", "add", "."], repoRoot)
+    await run(["git", "commit", "-m", "init"], repoRoot)
+    await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
+
+    const store = new DiffStore(repoRoot)
+    await store.initialize()
+    await store.refreshSnapshot("chat-1", repoRoot)
+
+    const result = await store.commitFiles({
+      chatId: "chat-1",
+      projectPath: repoRoot,
+      paths: ["app.txt"],
+      summary: "Local only",
+      description: "",
+      mode: "commit_and_push",
+    })
+
+    expect(result).toMatchObject({
+      ok: true,
+      mode: "commit_and_push",
+      pushed: false,
+    })
+    expect((await run(["git", "log", "-1", "--pretty=%s"], repoRoot)).trim()).toBe("Local only")
+  })
+
+  test("refreshSnapshot reports origin presence before the first commit", async () => {
+    const repoRoot = await createRepo()
+    tempDirs.push(repoRoot)
+    await run(["git", "remote", "add", "origin", "https://github.com/the-vispark/test224.git"], repoRoot)
+    await writeFile(path.join(repoRoot, "poem.md"), "rose\n", "utf8")
+
+    const store = new DiffStore(repoRoot)
+    await store.initialize()
+    await store.refreshSnapshot("chat-1", repoRoot)
+
+    expect(store.getSnapshot("chat-1")).toMatchObject({
+      status: "ready",
+      branchName: "main",
+      hasOriginRemote: true,
+      originRepoSlug: "the-vispark/test224",
+    })
+  })
   test("detects renamed files", async () => {
     const repoRoot = await createRepo()
     tempDirs.push(repoRoot)
@@ -231,6 +315,27 @@ describe("DiffStore", () => {
     })
 
     expect(await readFile(path.join(repoRoot, ".gitignore"), "utf8")).toBe("scratch.log\n")
+  })
+
+  test("ignoreFile accepts a folder entry for an untracked diff", async () => {
+    const repoRoot = await createRepo()
+    tempDirs.push(repoRoot)
+    await writeFile(path.join(repoRoot, "tracked.txt"), "base\n", "utf8")
+    await run(["git", "add", "."], repoRoot)
+    await run(["git", "commit", "-m", "init"], repoRoot)
+    await mkdir(path.join(repoRoot, "tmp/cache"), { recursive: true })
+    await writeFile(path.join(repoRoot, "tmp/cache/output.log"), "tmp\n", "utf8")
+
+    const store = new DiffStore(repoRoot)
+    await store.initialize()
+    await store.refreshSnapshot("chat-1", repoRoot)
+    await store.ignoreFile({
+      chatId: "chat-1",
+      projectPath: repoRoot,
+      path: "tmp/cache/",
+    })
+
+    expect(await readFile(path.join(repoRoot, ".gitignore"), "utf8")).toBe("tmp/cache/\n")
   })
 
   test("appendGitIgnoreEntry does not duplicate an existing identical entry", () => {

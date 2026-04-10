@@ -63,6 +63,15 @@ const DIFF_REFRESH_INTERVAL_MS = 5_000
 const EMPTY_DIFF_SNAPSHOT: ChatDiffSnapshot = { status: "unknown", files: [] }
 const ALWAYS_UNVIRTUALIZED_TAIL_ROWS = 12
 
+export function getIgnoreFolderEntryFromDiffPath(filePath: string) {
+  const normalized = filePath.replaceAll("\\", "/").replace(/\/+/g, "/").replace(/\/$/u, "")
+  const lastSlashIndex = normalized.lastIndexOf("/")
+  if (lastSlashIndex <= 0) {
+    return null
+  }
+  return `${normalized.slice(0, lastSlashIndex)}/`
+}
+
 export interface TranscriptTocItem {
   id: string
   label: string
@@ -241,6 +250,7 @@ const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
   const previousRowCountRef = useRef(0)
   const pendingPrependAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null)
   const [transcriptContentWidth, setTranscriptContentWidth] = useState<number | null>(null)
+  const [toolGroupExpanded, setToolGroupExpanded] = useState<Record<string, boolean>>({})
 
   const resolvedRows = useMemo(() => buildResolvedTranscriptRows(messages, {
     isLoading: isProcessing,
@@ -263,6 +273,16 @@ const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
   const virtualMeasurementScopeKey = transcriptContentWidth === null
     ? "width:unknown"
     : `width:${Math.round(transcriptContentWidth)}`
+  const handleToolGroupExpandedChange = useCallback((groupId: string, next: boolean) => {
+    setToolGroupExpanded((current) => (
+      current[groupId] === next
+        ? current
+        : {
+            ...current,
+            [groupId]: next,
+          }
+    ))
+  }, [])
 
   const rowVirtualizer = useVirtualizer({
     count: virtualizedHeadRows.length,
@@ -339,7 +359,6 @@ const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
 
     previousRowCountRef.current = currentCount
   }, [isHistoryLoading, resolvedRows.length, scrollRef])
-
   const handleTranscriptScroll = useCallback(() => {
     onScrollChange()
     const scrollContainer = scrollRef.current
@@ -388,6 +407,8 @@ const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
                           <div className="pb-5">
                             <VisparkCodeTranscriptRow
                               row={row}
+                              toolGroupExpanded={toolGroupExpanded}
+                              onToolGroupExpandedChange={handleToolGroupExpandedChange}
                               onAskUserQuestionSubmit={onAskUserQuestionSubmit}
                               onExitPlanModeConfirm={onExitPlanModeConfirm}
                             />
@@ -401,6 +422,8 @@ const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
                   <div key={`tail-row:${row.id}`} className="pb-5">
                     <VisparkCodeTranscriptRow
                       row={row}
+                      toolGroupExpanded={toolGroupExpanded}
+                      onToolGroupExpandedChange={handleToolGroupExpandedChange}
                       onAskUserQuestionSubmit={onAskUserQuestionSubmit}
                       onExitPlanModeConfirm={onExitPlanModeConfirm}
                     />
@@ -875,6 +898,42 @@ export function ChatPage() {
       }
     })()
   }, [dialog, state.socket])
+
+  const handleIgnoreDiffFolder = useCallback((filePath: string) => {
+    const chatId = activeChatIdRef.current
+    if (!chatId) return
+
+    const initialValue = getIgnoreFolderEntryFromDiffPath(filePath)
+    if (!initialValue) return
+
+    void (async () => {
+      const ignorePath = await dialog.prompt({
+        title: "Ignore Folder",
+        description: "Edit the folder pattern to add to .gitignore.",
+        initialValue,
+        confirmLabel: "Ignore",
+      })
+      if (!ignorePath) return
+
+      try {
+        await state.socket.command({
+          type: "chat.ignoreDiffFile",
+          chatId,
+          path: ignorePath,
+        })
+      } catch (error) {
+        await dialog.alert({
+          title: "Ignore failed",
+          description: error instanceof Error ? error.message : String(error),
+          closeLabel: "OK",
+        })
+      }
+    })()
+  }, [dialog, state.socket])
+
+  const handleOpenDiffInFinder = useCallback((filePath: string) => {
+    void state.handleOpenExternalPath("open_finder", filePath)
+  }, [state.handleOpenExternalPath])
 
   const handleCommitDiffs = useCallback(async (args: { paths: string[]; summary: string; description: string; mode: DiffCommitMode }) => {
     const chatId = activeChatIdRef.current
@@ -1748,8 +1807,10 @@ export function ChatPage() {
                 diffRenderMode={diffRenderMode}
                 wrapLines={wrapDiffLines}
                 onOpenFile={handleOpenDiffFile}
+                onOpenInFinder={handleOpenDiffInFinder}
                 onDiscardFile={handleDiscardDiffFile}
                 onIgnoreFile={handleIgnoreDiffFile}
+                onIgnoreFolder={handleIgnoreDiffFolder}
                 onCopyFilePath={handleCopyDiffFilePath}
                 onCopyRelativePath={handleCopyDiffRelativePath}
                 onListBranches={handleListBranches}

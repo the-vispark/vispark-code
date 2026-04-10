@@ -19,7 +19,7 @@ import { clearSourceSyncData } from "./source-sync"
 import { deleteProjectUpload, inferAttachmentContentType, persistProjectUpload } from "./uploads"
 import { getProjectUploadDir } from "./paths"
 
-const MAX_UPLOAD_FILE_SIZE_BYTES = 25 * 1024 * 1024
+const MAX_UPLOAD_FILE_SIZE_BYTES = 100 * 1024 * 1024
 
 export async function persistUploadedFiles(args: {
   projectId: string
@@ -33,7 +33,7 @@ export async function persistUploadedFiles(args: {
   try {
     for (const file of args.files) {
       if (file.size > MAX_UPLOAD_FILE_SIZE_BYTES) {
-        const error = new Error(`File "${file.name}" exceeds the 25 MB limit.`)
+        const error = new Error(`File "${file.name}" exceeds the 100 MB limit.`)
         ;(error as Error & { status?: number }).status = 413
         throw error
       }

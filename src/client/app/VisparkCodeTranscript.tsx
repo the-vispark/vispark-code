@@ -1,4 +1,4 @@
-import React, { memo, useMemo } from "react"
+import React, { memo, useMemo, useState } from "react"
 import type { AskUserQuestionItem, ProcessedToolCall } from "../components/messages/types"
 import type { AskUserQuestionAnswerMap, HydratedTranscriptMessage } from "../../shared/types"
 import { UserMessage } from "../components/messages/UserMessage"
@@ -347,12 +347,20 @@ const TranscriptToolGroup = memo(function TranscriptToolGroup({
   isLoading,
   localPath,
 }: TranscriptToolGroupProps) {
+  const [expanded, setExpanded] = useState(false)
+
   return (
     <div
       className="group relative"
       {...{ [CHAT_SELECTION_ZONE_ATTRIBUTE]: "" }}
     >
-      <CollapsedToolGroup messages={messages} isLoading={isLoading} localPath={localPath} />
+      <CollapsedToolGroup
+        messages={messages}
+        isLoading={isLoading}
+        localPath={localPath}
+        expanded={expanded}
+        onExpandedChange={setExpanded}
+      />
     </div>
   )
 }, (prev, next) => (

@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import { RightSidebar, canIgnoreDiffFile } from "./RightSidebar"
+import { RightSidebar, canIgnoreDiffFile, canIgnoreDiffFolder } from "./RightSidebar"
 import { TooltipProvider } from "../ui/tooltip"
 
 describe("RightSidebar", () => {
@@ -32,8 +32,10 @@ describe("RightSidebar", () => {
         diffRenderMode: "unified",
         wrapLines: false,
         onOpenFile: () => {},
+        onOpenInFinder: () => {},
         onDiscardFile: () => {},
         onIgnoreFile: () => {},
+        onIgnoreFolder: () => {},
         onCopyFilePath: () => {},
         onCopyRelativePath: () => {},
         onListBranches: async () => ({ recent: [], local: [], remote: [], pullRequests: [], pullRequestsStatus: "unavailable" }),
@@ -66,6 +68,7 @@ describe("RightSidebar", () => {
           branchName: "main",
           defaultBranchName: "main",
           behindCount: 3,
+          hasOriginRemote: true,
           hasUpstream: true,
           originRepoSlug: "acme/repo",
           files: [{
@@ -80,8 +83,10 @@ describe("RightSidebar", () => {
         diffRenderMode: "unified",
         wrapLines: false,
         onOpenFile: () => {},
+        onOpenInFinder: () => {},
         onDiscardFile: () => {},
         onIgnoreFile: () => {},
+        onIgnoreFolder: () => {},
         onCopyFilePath: () => {},
         onCopyRelativePath: () => {},
         onListBranches: async () => ({ recent: [], local: [], remote: [], pullRequests: [], pullRequestsStatus: "unavailable" }),
@@ -115,8 +120,10 @@ describe("RightSidebar", () => {
         diffRenderMode: "unified",
         wrapLines: false,
         onOpenFile: () => {},
+        onOpenInFinder: () => {},
         onDiscardFile: () => {},
         onIgnoreFile: () => {},
+        onIgnoreFolder: () => {},
         onCopyFilePath: () => {},
         onCopyRelativePath: () => {},
         onListBranches: async () => ({ recent: [], local: [], remote: [], pullRequests: [], pullRequestsStatus: "unavailable" }),
@@ -152,8 +159,10 @@ describe("RightSidebar", () => {
         diffRenderMode: "unified",
         wrapLines: false,
         onOpenFile: () => {},
+        onOpenInFinder: () => {},
         onDiscardFile: () => {},
         onIgnoreFile: () => {},
+        onIgnoreFolder: () => {},
         onCopyFilePath: () => {},
         onCopyRelativePath: () => {},
         onListBranches: async () => ({ recent: [], local: [], remote: [], pullRequests: [], pullRequestsStatus: "unavailable" }),
@@ -182,6 +191,7 @@ describe("RightSidebar", () => {
           status: "ready",
           branchName: "feature/branch-switcher",
           defaultBranchName: "main",
+          hasOriginRemote: true,
           hasUpstream: true,
           originRepoSlug: "acme/repo",
           files: [],
@@ -191,8 +201,10 @@ describe("RightSidebar", () => {
         diffRenderMode: "unified",
         wrapLines: false,
         onOpenFile: () => {},
+        onOpenInFinder: () => {},
         onDiscardFile: () => {},
         onIgnoreFile: () => {},
+        onIgnoreFolder: () => {},
         onCopyFilePath: () => {},
         onCopyRelativePath: () => {},
         onListBranches: async () => ({ recent: [], local: [], remote: [], pullRequests: [], pullRequestsStatus: "unavailable" }),
@@ -221,6 +233,7 @@ describe("RightSidebar", () => {
           status: "ready",
           branchName: "feature/ahead",
           defaultBranchName: "main",
+          hasOriginRemote: true,
           hasUpstream: true,
           aheadCount: 2,
           files: [],
@@ -238,8 +251,10 @@ describe("RightSidebar", () => {
         diffRenderMode: "unified",
         wrapLines: false,
         onOpenFile: () => {},
+        onOpenInFinder: () => {},
         onDiscardFile: () => {},
         onIgnoreFile: () => {},
+        onIgnoreFolder: () => {},
         onCopyFilePath: () => {},
         onCopyRelativePath: () => {},
         onListBranches: async () => ({ recent: [], local: [], remote: [], pullRequests: [], pullRequestsStatus: "unavailable" }),
@@ -271,6 +286,35 @@ describe("RightSidebar", () => {
       changeType: "modified",
       isUntracked: false,
       patch: "",
+    })).toBe(false)
+  })
+
+  test("ignores folders only for untracked files with a parent directory", () => {
+    expect(canIgnoreDiffFolder({
+      path: "tmp/cache/output.log",
+      changeType: "added",
+      isUntracked: true,
+      additions: 0,
+      deletions: 0,
+      patchDigest: "digest-4",
+    })).toBe(true)
+
+    expect(canIgnoreDiffFolder({
+      path: "scratch.log",
+      changeType: "added",
+      isUntracked: true,
+      additions: 0,
+      deletions: 0,
+      patchDigest: "digest-5",
+    })).toBe(false)
+
+    expect(canIgnoreDiffFolder({
+      path: "src/app.ts",
+      changeType: "modified",
+      isUntracked: false,
+      additions: 0,
+      deletions: 0,
+      patchDigest: "digest-6",
     })).toBe(false)
   })
 })

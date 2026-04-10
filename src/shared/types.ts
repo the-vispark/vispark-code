@@ -464,6 +464,7 @@ export interface GitHubRepoAvailabilityResult {
 export interface BranchMetadata {
   branchName?: string
   defaultBranchName?: string
+  hasOriginRemote?: boolean
   originRepoSlug?: string
   hasUpstream?: boolean
 }

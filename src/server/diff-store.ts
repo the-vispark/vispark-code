@@ -34,6 +34,7 @@ function createEmptyState(): StoredChatDiffState {
     status: "unknown",
     branchName: undefined,
     defaultBranchName: undefined,
+    hasOriginRemote: undefined,
     originRepoSlug: undefined,
     hasUpstream: undefined,
     aheadCount: undefined,
@@ -47,6 +48,7 @@ function createEmptyState(): StoredChatDiffState {
 function branchMetadataEqual(left: BranchMetadata, right: BranchMetadata) {
   return left.branchName === right.branchName
     && left.defaultBranchName === right.defaultBranchName
+    && left.hasOriginRemote === right.hasOriginRemote
     && left.originRepoSlug === right.originRepoSlug
     && left.hasUpstream === right.hasUpstream
 }
@@ -176,6 +178,9 @@ function createPushFailure(mode: DiffCommitMode, detail: string, snapshotChanged
   if (normalized.includes("non-fast-forward") || normalized.includes("fetch first")) {
     title = "Branch is not up to date"
     message = "Your branch is behind its remote. Pull or rebase, then try pushing again."
+  } else if (normalized.includes("does not appear to be a git repository")) {
+    title = "No origin remote configured"
+    message = "This repository does not have an origin remote configured."
   } else if (normalized.includes("has no upstream branch") || normalized.includes("set-upstream")) {
     title = "No upstream branch configured"
     message = "This branch does not have an upstream remote branch configured yet."
@@ -1115,6 +1120,7 @@ export class DiffStore {
       status: state.status,
       branchName: state.branchName,
       defaultBranchName: state.defaultBranchName,
+      hasOriginRemote: state.hasOriginRemote,
       originRepoSlug: state.originRepoSlug,
       hasUpstream: state.hasUpstream,
       aheadCount: state.aheadCount,
@@ -1137,6 +1143,7 @@ export class DiffStore {
         status: "no_repo",
         branchName: undefined,
         defaultBranchName: undefined,
+        hasOriginRemote: undefined,
         originRepoSlug: undefined,
         hasUpstream: undefined,
         aheadCount: undefined,
@@ -1154,6 +1161,7 @@ export class DiffStore {
     const branchName = await getBranchName(repo.repoRoot)
     const defaultBranchName = await resolveDefaultBranchName(repo.repoRoot)
     const originRemoteUrl = await getOriginRemoteUrl(repo.repoRoot)
+    const hasOriginRemote = originRemoteUrl !== null
     const originRepoSlug = extractGitHubRepoSlug(originRemoteUrl) ?? undefined
     const hasUpstream = await hasUpstreamBranch(repo.repoRoot)
     const { aheadCount, behindCount } = hasUpstream
@@ -1171,6 +1179,7 @@ export class DiffStore {
       status: "ready",
       branchName,
       defaultBranchName,
+      hasOriginRemote,
       originRepoSlug,
       hasUpstream,
       aheadCount,
@@ -1482,7 +1491,9 @@ export class DiffStore {
       throw new Error("Project is not in a git repository")
     }
 
-    const hasUpstream = await hasUpstreamBranch(repo.repoRoot)
+    const [hasUpstream] = await Promise.all([
+      hasUpstreamBranch(repo.repoRoot),
+    ])
     if (args.action === "publish") {
       const publishResult = await runGit(["push", "-u", "origin", "HEAD"], repo.repoRoot)
       if (publishResult.exitCode !== 0) {
@@ -1665,6 +1676,11 @@ export class DiffStore {
     if (!repo) {
       throw new Error("Project is not in a git repository")
     }
+    const [hasUpstream, originRemoteUrl] = await Promise.all([
+      hasUpstreamBranch(repo.repoRoot),
+      getOriginRemoteUrl(repo.repoRoot),
+    ])
+    const hasOriginRemote = originRemoteUrl !== null
 
     const currentDirtyPaths = new Set((await listDirtyPaths(repo.repoRoot)).map((entry) => entry.path))
     const missingPaths = normalizedPaths.filter((relativePath) => !currentDirtyPaths.has(relativePath))
@@ -1701,7 +1717,19 @@ export class DiffStore {
       } satisfies DiffCommitResult
     }
 
-    const pushResult = await runGit(["push"], repo.repoRoot)
+    if (!hasUpstream && !hasOriginRemote) {
+      return {
+        ok: true,
+        mode: args.mode,
+        branchName,
+        pushed: false,
+        snapshotChanged,
+      } satisfies DiffCommitResult
+    }
+
+    const pushResult = hasUpstream
+      ? await runGit(["push"], repo.repoRoot)
+      : await runGit(["push", "-u", "origin", "HEAD"], repo.repoRoot)
     if (pushResult.exitCode !== 0) {
       return createPushFailure(args.mode, formatGitFailure(pushResult), snapshotChanged)
     }
@@ -1763,23 +1791,26 @@ export class DiffStore {
     projectPath: string
     path: string
   }) {
-    const relativePath = normalizeRepoRelativePath(args.path)
+    const ignoreEntry = normalizeRepoRelativePath(args.path)
     const repo = await resolveRepo(args.projectPath)
     if (!repo) {
       throw new Error("Project is not in a git repository")
     }
 
-    const entry = await findDirtyPath(repo.repoRoot, relativePath)
-    if (!entry) {
-      throw new Error(`File is no longer changed: ${relativePath}`)
-    }
-    if (!entry.isUntracked) {
+    const dirtyPaths = await listDirtyPaths(repo.repoRoot)
+    const exactEntry = dirtyPaths.find((candidate) => candidate.path === ignoreEntry)
+    if (exactEntry && !exactEntry.isUntracked) {
       throw new Error("Only untracked files can be ignored from the diff viewer")
+    }
+
+    const entry = dirtyPaths.find((candidate) => candidate.isUntracked && (candidate.path === ignoreEntry || candidate.path.startsWith(ignoreEntry)))
+    if (!entry) {
+      throw new Error(`File is no longer changed: ${ignoreEntry}`)
     }
 
     const gitignorePath = path.join(repo.repoRoot, ".gitignore")
     const currentContents = await readFile(gitignorePath, "utf8").catch(() => null)
-    const nextContents = appendGitIgnoreEntry(currentContents, relativePath)
+    const nextContents = appendGitIgnoreEntry(currentContents, ignoreEntry)
     if (nextContents !== currentContents) {
       await writeFile(gitignorePath, nextContents, "utf8")
     }
