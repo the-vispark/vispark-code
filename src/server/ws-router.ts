@@ -22,6 +22,7 @@ const DEFAULT_CHAT_RECENT_LIMIT = 200
 export interface ClientState {
   subscriptions: Map<string, SubscriptionTopic>
   snapshotSignatures: Map<string, string>
+  protectedDraftChatIds?: Set<string>
 }
 
 interface CreateWsRouterArgs {
@@ -109,9 +110,28 @@ export function createWsRouter({
     ])
   }
 
-  async function maybePruneStaleEmptyChats() {
+  function getProtectedDraftChatIds(extraSockets?: Iterable<ServerWebSocket<ClientState>>) {
+    const protectedChatIds = new Set<string>()
+
+    for (const socket of sockets) {
+      for (const chatId of socket.data.protectedDraftChatIds ?? []) {
+        protectedChatIds.add(chatId)
+      }
+    }
+
+    for (const socket of extraSockets ?? []) {
+      for (const chatId of socket.data.protectedDraftChatIds ?? []) {
+        protectedChatIds.add(chatId)
+      }
+    }
+
+    return protectedChatIds
+  }
+
+  async function maybePruneStaleEmptyChats(extraSockets?: Iterable<ServerWebSocket<ClientState>>) {
     await store.pruneStaleEmptyChats?.({
       activeChatIds: getProtectedChatIds(),
+      protectedChatIds: getProtectedDraftChatIds(extraSockets),
     })
   }
 
@@ -231,7 +251,7 @@ export function createWsRouter({
 
   async function pushSnapshots(ws: ServerWebSocket<ClientState>, options?: { skipPrune?: boolean }) {
     if (!options?.skipPrune) {
-      await maybePruneStaleEmptyChats()
+      await maybePruneStaleEmptyChats([ws])
     }
     const snapshotSignatures = ensureSnapshotSignatures(ws)
     for (const [id, topic] of ws.data.subscriptions.entries()) {
@@ -469,6 +489,11 @@ export function createWsRouter({
         }
         case "chat.markRead": {
           await store.setChatReadState(command.chatId, false)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          break
+        }
+        case "chat.setDraftProtection": {
+          ws.data.protectedDraftChatIds = new Set(command.chatIds)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           break
         }

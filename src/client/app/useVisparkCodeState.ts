@@ -21,6 +21,7 @@ import { NEW_CHAT_COMPOSER_ID, type ComposerState, useChatPreferencesStore } fro
 import { useRightSidebarStore } from "../stores/rightSidebarStore"
 import { useTerminalLayoutStore } from "../stores/terminalLayoutStore"
 import { getEditorPresetLabel, useTerminalPreferencesStore } from "../stores/terminalPreferencesStore"
+import { useChatInputStore } from "../stores/chatInputStore"
 import type { ChatSnapshot, LocalProjectsSnapshot, SidebarChatRow, SidebarData } from "../../shared/types"
 import type { AskUserQuestionItem } from "../components/messages/types"
 import { useAppDialog } from "../components/ui/app-dialog"
@@ -437,6 +438,13 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
   const [pendingChatId, setPendingChatId] = useState<string | null>(null)
   const [optimisticUserPrompts, setOptimisticUserPrompts] = useState<OptimisticUserPrompt[]>([])
   const [focusEpoch, setFocusEpoch] = useState(0)
+  const draftByChatId = useChatInputStore((state) => state.drafts)
+  const attachmentDraftsByChatId = useChatInputStore((state) => state.attachmentDrafts)
+  const draftChatIds = useMemo(() => Object.keys(draftByChatId), [draftByChatId])
+  const attachmentDraftChatIds = useMemo(
+    () => Object.keys(attachmentDraftsByChatId),
+    [attachmentDraftsByChatId]
+  )
   const chatSubscriptionDebugRef = useRef(0)
   const lastActiveProjectDiffRef = useRef<{ projectId: string | null; diffs: ChatSnapshot["diffs"] | null }>({
     projectId: null,
@@ -459,6 +467,15 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
       setCommandError(null)
     })
   }, [socket])
+
+  useEffect(() => {
+    if (connectionStatus !== "connected") return
+
+    const protectedChatIds = [...new Set([...draftChatIds, ...attachmentDraftChatIds])].sort()
+    void socket.command({ type: "chat.setDraftProtection", chatIds: protectedChatIds }).catch((error) => {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    })
+  }, [attachmentDraftChatIds, connectionStatus, draftChatIds, socket])
 
   useEffect(() => {
     return socket.subscribe<LocalProjectsSnapshot>({ type: "local-projects" }, (snapshot) => {
