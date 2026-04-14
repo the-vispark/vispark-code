@@ -57,12 +57,25 @@ interface ActiveTurn {
   hasFinalResult: boolean
   cancelRequested: boolean
   cancelRecorded: boolean
+  clientTraceId?: string
+  profilingStartedAt?: number
 }
 
 interface AgentCoordinatorArgs {
   store: EventStore
   onStateChange: () => void
   generateTitle?: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
+}
+
+interface SendToStartingProfile {
+  traceId: string
+  startedAt: number
+}
+
+interface DeferredHarnessTurn {
+  proxy: HarnessTurn
+  attach: (turn: HarnessTurn) => void
+  fail: (error: unknown) => void
 }
 
 function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(
@@ -99,6 +112,98 @@ function escapeXmlAttribute(value: string) {
     .replaceAll("\"", "&quot;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
+}
+
+function isSendToStartingProfilingEnabled() {
+  return process.env.VISPARK_CODE_PROFILE_SEND_TO_STARTING === "1"
+}
+
+function elapsedProfileMs(startedAt: number) {
+  return Number((performance.now() - startedAt).toFixed(1))
+}
+
+function logSendToStartingProfile(
+  profile: SendToStartingProfile | null | undefined,
+  stage: string,
+  details?: Record<string, unknown>
+) {
+  if (!profile || !isSendToStartingProfilingEnabled()) {
+    return
+  }
+
+  console.log("[vispark-code/send->starting][server]", JSON.stringify({
+    traceId: profile.traceId,
+    stage,
+    elapsedMs: elapsedProfileMs(profile.startedAt),
+    ...details,
+  }))
+}
+
+function createDeferredHarnessTurn(provider: AgentProvider): DeferredHarnessTurn {
+  let attachedTurn: HarnessTurn | null = null
+  let settled = false
+  let closeRequested = false
+  let interruptRequested = false
+  let resolveTurn!: (turn: HarnessTurn) => void
+  let rejectTurn!: (error: unknown) => void
+
+  const turnReady = new Promise<HarnessTurn>((resolve, reject) => {
+    resolveTurn = resolve
+    rejectTurn = reject
+  })
+
+  const proxy: HarnessTurn = {
+    provider,
+    stream: (async function* () {
+      const turn = await turnReady
+      for await (const event of turn.stream) {
+        yield event
+      }
+    })(),
+    getAccountInfo: async () => {
+      const turn = await turnReady
+      return await turn.getAccountInfo?.() ?? null
+    },
+    interrupt: async () => {
+      interruptRequested = true
+      if (!attachedTurn) {
+        return
+      }
+      await attachedTurn.interrupt()
+    },
+    close: () => {
+      closeRequested = true
+      attachedTurn?.close()
+    },
+  }
+
+  return {
+    proxy,
+    attach(turn) {
+      if (settled) {
+        turn.close()
+        return
+      }
+
+      settled = true
+      attachedTurn = turn
+      resolveTurn(turn)
+
+      if (interruptRequested) {
+        void turn.interrupt().catch(() => undefined)
+      }
+      if (closeRequested) {
+        turn.close()
+      }
+    },
+    fail(error) {
+      if (settled) {
+        return
+      }
+      settled = true
+      rejectTurn(error)
+    },
+  }
 }
 
 export function buildAttachmentHintText(attachments: ChatAttachment[]) {
@@ -553,6 +658,18 @@ export class AgentCoordinator {
     return new Set(this.drainingStreams.keys())
   }
 
+  getActiveTurnProfile(chatId: string): SendToStartingProfile | null {
+    const active = this.activeTurns.get(chatId)
+    if (!active?.clientTraceId || active.profilingStartedAt === undefined) {
+      return null
+    }
+
+    return {
+      traceId: active.clientTraceId,
+      startedAt: active.profilingStartedAt,
+    }
+  }
+
   async stopDraining(chatId: string) {
     const draining = this.drainingStreams.get(chatId)
     if (!draining) return
@@ -591,7 +708,16 @@ export class AgentCoordinator {
     planMode: boolean
     continualLearning: boolean
     appendUserPrompt: boolean
+    profile?: SendToStartingProfile | null
   }) {
+    logSendToStartingProfile(args.profile, "start_turn.begin", {
+      chatId: args.chatId,
+      provider: args.provider,
+      appendUserPrompt: args.appendUserPrompt,
+      planMode: args.planMode,
+    })
+
+    // Close any lingering draining stream before starting a new turn.
     const draining = this.drainingStreams.get(args.chatId)
     if (draining) {
       draining.turn.close()
@@ -605,8 +731,16 @@ export class AgentCoordinator {
 
     if (!chat.provider) {
       await this.store.setChatProvider(args.chatId, args.provider)
+      logSendToStartingProfile(args.profile, "start_turn.provider_set", {
+        chatId: args.chatId,
+        provider: args.provider,
+      })
     }
     await this.store.setPlanMode(args.chatId, args.planMode)
+    logSendToStartingProfile(args.profile, "start_turn.plan_mode_set", {
+      chatId: args.chatId,
+      planMode: args.planMode,
+    })
 
     const existingMessages = this.store.getMessages(args.chatId)
     const shouldGenerateTitle = args.appendUserPrompt && chat.title === "New Chat" && existingMessages.length === 0
@@ -614,6 +748,10 @@ export class AgentCoordinator {
 
     if (optimisticTitle) {
       await this.store.renameChat(args.chatId, optimisticTitle)
+      logSendToStartingProfile(args.profile, "start_turn.optimistic_title_set", {
+        chatId: args.chatId,
+        title: optimisticTitle,
+      })
     }
 
     const project = this.store.getProject(chat.projectId)
@@ -627,8 +765,15 @@ export class AgentCoordinator {
         Date.now()
       )
       await this.store.appendMessage(args.chatId, userPromptEntry)
+      logSendToStartingProfile(args.profile, "start_turn.user_prompt_appended", {
+        chatId: args.chatId,
+        entryId: userPromptEntry._id,
+      })
     }
     await this.store.recordTurnStarted(args.chatId)
+    logSendToStartingProfile(args.profile, "start_turn.turn_started_recorded", {
+      chatId: args.chatId,
+    })
 
     if (shouldGenerateTitle) {
       void this.generateTitleInBackground(args.chatId, args.content, project.localPath, optimisticTitle ?? "New Chat")
@@ -652,20 +797,12 @@ export class AgentCoordinator {
       })
     }
 
-    const turn = await startVisionTurn({
-      content: buildPromptText(args.content, args.attachments),
-      localPath: project.localPath,
-      model: args.model,
-      planMode: args.planMode,
-      continualLearning: args.continualLearning,
-      sessionToken: chat.sessionToken,
-      onToolRequest,
-    })
-
+    const promptText = buildPromptText(args.content, args.attachments)
+    const deferredTurn = createDeferredHarnessTurn(args.provider)
     const active: ActiveTurn = {
       chatId: args.chatId,
       provider: args.provider,
-      turn,
+      turn: deferredTurn.proxy,
       model: args.model,
       planMode: args.planMode,
       status: "starting",
@@ -673,26 +810,70 @@ export class AgentCoordinator {
       hasFinalResult: false,
       cancelRequested: false,
       cancelRecorded: false,
+      clientTraceId: args.profile?.traceId,
+      profilingStartedAt: args.profile?.startedAt,
     }
     this.activeTurns.set(args.chatId, active)
+    logSendToStartingProfile(args.profile, "start_turn.active_turn_registered", {
+      chatId: args.chatId,
+      status: active.status,
+    })
     this.onStateChange()
-
-    if (turn.getAccountInfo) {
-      void turn.getAccountInfo()
-        .then(async (accountInfo) => {
-          if (!accountInfo) return
-          if (!this.store.getChat(args.chatId)) return
-          await this.store.appendMessage(args.chatId, timestamped({ kind: "account_info", accountInfo }))
-          this.onStateChange()
-        })
-        .catch(() => undefined)
-    }
-
+    logSendToStartingProfile(args.profile, "start_turn.state_change_emitted", {
+      chatId: args.chatId,
+      status: active.status,
+    })
     void this.runTurn(active)
+
+    void (async () => {
+      logSendToStartingProfile(args.profile, "start_turn.provider_boot.begin", {
+        chatId: args.chatId,
+        provider: args.provider,
+        model: args.model,
+      })
+      try {
+        const turn = await startVisionTurn({
+          content: promptText,
+          localPath: project.localPath,
+          model: args.model,
+          planMode: args.planMode,
+          continualLearning: args.continualLearning,
+          sessionToken: chat.sessionToken,
+          onToolRequest,
+        })
+        deferredTurn.attach(turn)
+        logSendToStartingProfile(args.profile, "start_turn.provider_boot.ready", {
+          chatId: args.chatId,
+          provider: args.provider,
+          model: args.model,
+        })
+
+        if (turn.getAccountInfo) {
+          void turn.getAccountInfo()
+            .then(async (accountInfo) => {
+              if (!accountInfo) return
+              if (!this.store.getChat(args.chatId)) return
+              await this.store.appendMessage(args.chatId, timestamped({ kind: "account_info", accountInfo }))
+              this.onStateChange()
+            })
+            .catch(() => undefined)
+        }
+      } catch (error) {
+        deferredTurn.fail(error)
+      }
+    })()
   }
 
   async send(command: Extract<ClientCommand, { type: "chat.send" }>) {
+    const profile = command.clientTraceId
+      ? { traceId: command.clientTraceId, startedAt: performance.now() }
+      : null
     let chatId = command.chatId
+
+    logSendToStartingProfile(profile, "chat_send.received", {
+      existingChatId: command.chatId ?? null,
+      projectId: command.projectId ?? null,
+    })
 
     if (!chatId) {
       if (!command.projectId) {
@@ -700,6 +881,10 @@ export class AgentCoordinator {
       }
       const created = await this.store.createChat(command.projectId)
       chatId = created.id
+      logSendToStartingProfile(profile, "chat_send.chat_created", {
+        chatId,
+        projectId: command.projectId,
+      })
     }
 
     const settings = this.getProviderSettings(command)
@@ -712,6 +897,13 @@ export class AgentCoordinator {
       planMode: settings.planMode,
       continualLearning: settings.continualLearning,
       appendUserPrompt: true,
+      profile,
+    })
+
+    logSendToStartingProfile(profile, "chat_send.ready_for_ack", {
+      chatId,
+      provider: settings.provider,
+      model: settings.model,
     })
 
     return { chatId }

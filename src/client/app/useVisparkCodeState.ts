@@ -236,6 +236,53 @@ function logVisparkCodeState(message: string, details?: unknown) {
   console.info(`[useVisparkCodeState] ${message}`, details)
 }
 
+const SEND_TO_STARTING_PROFILE_STORAGE_KEY = "vispark-code:profile-send-to-starting"
+
+interface SendToStartingTrace {
+  traceId: string
+  optimisticId: string
+  startedAt: number
+  serverChatId: string | null
+  routeChatIdAtSend: string | null
+  contentPreview: string
+  ackAt?: number
+  snapshotAt?: number
+  startingStatusAt?: number
+  startingRenderedAt?: number
+}
+
+function isSendToStartingProfilingEnabled() {
+  try {
+    return window.sessionStorage.getItem(SEND_TO_STARTING_PROFILE_STORAGE_KEY) === "1"
+      || window.localStorage.getItem(SEND_TO_STARTING_PROFILE_STORAGE_KEY) === "1"
+  } catch {
+    return false
+  }
+}
+
+function elapsedTraceMs(startedAt: number) {
+  return Number((performance.now() - startedAt).toFixed(1))
+}
+
+function logSendToStartingTrace(
+  trace: SendToStartingTrace | null | undefined,
+  stage: string,
+  details?: Record<string, unknown>
+) {
+  if (!trace || !isSendToStartingProfilingEnabled()) {
+    return
+  }
+
+  console.debug("[vispark-code/send->starting][client]", {
+    traceId: trace.traceId,
+    stage,
+    elapsedMs: elapsedTraceMs(trace.startedAt),
+    serverChatId: trace.serverChatId,
+    routeChatIdAtSend: trace.routeChatIdAtSend,
+    ...details,
+  })
+}
+
 function composerStateFromSendOptions(options?: {
   provider?: AgentProvider
   model?: string
@@ -438,6 +485,7 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
   const [pendingChatId, setPendingChatId] = useState<string | null>(null)
   const [optimisticUserPrompts, setOptimisticUserPrompts] = useState<OptimisticUserPrompt[]>([])
   const [focusEpoch, setFocusEpoch] = useState(0)
+  const sendToStartingProfilesRef = useRef<Map<string, SendToStartingTrace>>(new Map())
   const draftByChatId = useChatInputStore((state) => state.drafts)
   const attachmentDraftsByChatId = useChatInputStore((state) => state.attachmentDrafts)
   const draftChatIds = useMemo(() => Object.keys(draftByChatId), [draftByChatId])
@@ -446,6 +494,7 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     [attachmentDraftsByChatId]
   )
   const chatSubscriptionDebugRef = useRef(0)
+  const lastStartingRenderedTraceIdRef = useRef<string | null>(null)
   const lastActiveProjectDiffRef = useRef<{ projectId: string | null; diffs: ChatSnapshot["diffs"] | null }>({
     projectId: null,
     diffs: null,
@@ -574,6 +623,18 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     setChatSnapshot(null)
     setChatReady(false)
     const unsubscribe = socket.subscribe<ChatSnapshot | null>({ type: "chat", chatId: activeChatId, recentLimit: INITIAL_CHAT_RECENT_LIMIT }, (snapshot) => {
+      if (snapshot?.runtime.chatId) {
+        const matchingTrace = [...sendToStartingProfilesRef.current.values()]
+          .filter((trace) => trace.serverChatId === snapshot.runtime.chatId)
+          .sort((left, right) => right.startedAt - left.startedAt)[0]
+        if (matchingTrace && matchingTrace.snapshotAt === undefined) {
+          matchingTrace.snapshotAt = performance.now()
+          logSendToStartingTrace(matchingTrace, "chat_snapshot_received", {
+            status: snapshot.runtime.status,
+            messageCount: snapshot.messages.length,
+          })
+        }
+      }
       setChatSnapshot((current) => {
         const reused = sameChatSnapshotCore(current, snapshot)
         logVisparkCodeState("chat snapshot received", {
@@ -794,6 +855,67 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
   )
 
   useEffect(() => {
+    if (!activeChatId || runtime?.status !== "starting") {
+      return
+    }
+
+    const matchingTrace = [...sendToStartingProfilesRef.current.values()]
+      .filter((trace) => trace.serverChatId === activeChatId)
+      .sort((left, right) => right.startedAt - left.startedAt)[0]
+    if (!matchingTrace || matchingTrace.startingStatusAt !== undefined) {
+      return
+    }
+
+    matchingTrace.startingStatusAt = performance.now()
+    logSendToStartingTrace(matchingTrace, "runtime_status_starting", {
+      status: runtime.status,
+    })
+  }, [activeChatId, runtime?.status])
+
+  useEffect(() => {
+    if (!activeChatId || !runtime || runtime.status === "starting") {
+      return
+    }
+
+    const matchingTrace = [...sendToStartingProfilesRef.current.values()]
+      .filter((trace) => trace.serverChatId === activeChatId)
+      .sort((left, right) => right.startedAt - left.startedAt)[0]
+    if (!matchingTrace || matchingTrace.startingRenderedAt !== undefined) {
+      return
+    }
+
+    logSendToStartingTrace(matchingTrace, "starting_not_observed", {
+      status: runtime.status,
+    })
+    sendToStartingProfilesRef.current.delete(matchingTrace.traceId)
+  }, [activeChatId, runtime])
+
+  useLayoutEffect(() => {
+    if (!activeChatId || runtime?.status !== "starting") {
+      lastStartingRenderedTraceIdRef.current = null
+      return
+    }
+
+    const matchingTrace = [...sendToStartingProfilesRef.current.values()]
+      .filter((trace) => trace.serverChatId === activeChatId)
+      .sort((left, right) => right.startedAt - left.startedAt)[0]
+    if (!matchingTrace) {
+      return
+    }
+
+    if (lastStartingRenderedTraceIdRef.current === matchingTrace.traceId) {
+      return
+    }
+
+    lastStartingRenderedTraceIdRef.current = matchingTrace.traceId
+    matchingTrace.startingRenderedAt = performance.now()
+    logSendToStartingTrace(matchingTrace, "starting_render_committed", {
+      totalMs: elapsedTraceMs(matchingTrace.startedAt),
+    })
+    sendToStartingProfilesRef.current.delete(matchingTrace.traceId)
+  }, [activeChatId, runtime?.status])
+
+  useEffect(() => {
     setOptimisticUserPrompts((current) => {
       const reconciled = reconcileOptimisticUserPrompts(current, optimisticScopeId, serverTranscriptEntries)
       if (reconciled.length === current.length && reconciled.every((prompt, index) => prompt === current[index])) {
@@ -1005,8 +1127,24 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
   ) => {
     const attachments = options?.attachments ?? []
     const optimisticId = generateUUID()
+    const clientTraceId = generateUUID()
     const signature = getUserPromptSignature(content, attachments)
     const optimisticScopeId = activeChatId ?? NEW_CHAT_OPTIMISTIC_SCOPE
+    const sendTrace: SendToStartingTrace = {
+      traceId: clientTraceId,
+      optimisticId,
+      startedAt: performance.now(),
+      serverChatId: activeChatId,
+      routeChatIdAtSend: activeChatId,
+      contentPreview: content.slice(0, 80),
+    }
+    sendToStartingProfilesRef.current.set(clientTraceId, sendTrace)
+    logSendToStartingTrace(sendTrace, "handle_send_called", {
+      optimisticScopeId,
+      attachments: attachments.length,
+      contentLength: content.length,
+      contentPreview: sendTrace.contentPreview,
+    })
     const requiredMatchCount = countMatchingUserPrompts(serverTranscriptEntries, signature)
       + optimisticUserPrompts.filter((prompt) => prompt.scopeId === optimisticScopeId && prompt.signature === signature).length
       + 1
@@ -1024,6 +1162,10 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
         createdAt: Date.now(),
       },
     }])
+    logSendToStartingTrace(sendTrace, "optimistic_prompt_added", {
+      optimisticId,
+      optimisticScopeId,
+    })
 
     try {
       let projectId = selectedProjectId ?? sidebarData.projectGroups[0]?.groupKey ?? null
@@ -1046,12 +1188,18 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
         type: "chat.send",
         chatId: activeChatId ?? undefined,
         projectId: activeChatId ? undefined : projectId ?? undefined,
+        clientTraceId,
         provider: options?.provider,
         content,
         attachments,
         model: options?.model,
         modelOptions: options?.modelOptions,
         planMode: options?.planMode,
+      })
+      sendTrace.ackAt = performance.now()
+      sendTrace.serverChatId = result.chatId ?? sendTrace.serverChatId
+      logSendToStartingTrace(sendTrace, "chat_send_ack_received", {
+        resultChatId: result.chatId ?? null,
       })
 
       if (!activeChatId && result.chatId) {
@@ -1069,6 +1217,10 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
       setCommandError(null)
     } catch (error) {
       setOptimisticUserPrompts((current) => current.filter((prompt) => prompt.id !== optimisticId))
+      logSendToStartingTrace(sendTrace, "handle_send_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      sendToStartingProfilesRef.current.delete(clientTraceId)
       setCommandError(error instanceof Error ? error.message : String(error))
       throw error
     }
