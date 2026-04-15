@@ -97,6 +97,7 @@ interface Props {
     value: string,
     options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; attachments?: ChatAttachment[] }
   ) => Promise<void>
+  onLayoutChange?: () => void
   onCancel?: () => void
   disabled: boolean
   canCancel?: boolean
@@ -164,6 +165,7 @@ export function resolvePlanModeState(args: {
 
 const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onSubmit,
+  onLayoutChange,
   onCancel,
   disabled,
   canCancel,
@@ -220,6 +222,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const showPlanMode = providerConfig?.supportsPlanMode ?? false
   const uploadedAttachments = attachments.filter((attachment) => attachment.status === "uploaded")
   const hasPendingUploads = attachments.some((attachment) => attachment.status === "uploading")
+  const hasTextToSend = value.trim().length > 0
   const canSubmit = value.trim().length > 0 || uploadedAttachments.length > 0
   const orderedAttachments = [...attachments].sort((left, right) => {
     if (left.kind === right.kind) return 0
@@ -270,12 +273,22 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
   useLayoutEffect(() => {
     autoResize()
-  }, [value, autoResize])
+    onLayoutChange?.()
+  }, [autoResize, onLayoutChange, value])
 
   useEffect(() => {
-    window.addEventListener("resize", autoResize)
-    return () => window.removeEventListener("resize", autoResize)
-  }, [autoResize])
+    const handleResize = () => {
+      autoResize()
+      onLayoutChange?.()
+    }
+
+    window.addEventListener("resize", handleResize)
+    return () => window.removeEventListener("resize", handleResize)
+  }, [autoResize, onLayoutChange])
+
+  useLayoutEffect(() => {
+    onLayoutChange?.()
+  }, [attachments.length, onLayoutChange, uploadError])
 
   useEffect(() => {
     textareaRef.current?.focus()
@@ -512,7 +525,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     }
 
     const isTouchDevice = "ontouchstart" in window || navigator.maxTouchPoints > 0
-    if (event.key === "Enter" && !event.shiftKey && !canCancel && !isTouchDevice) {
+    if (event.key === "Enter" && !event.shiftKey && !isTouchDevice && !disabled && hasTextToSend && !hasPendingUploads) {
       event.preventDefault()
       void handleSubmit()
     }
@@ -654,7 +667,9 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
               type="button"
               onPointerDown={(event) => {
                 event.preventDefault()
-                if (canCancel) {
+                if (!disabled && hasTextToSend && !hasPendingUploads) {
+                  void handleSubmit()
+                } else if (canCancel) {
                   onCancel?.()
                 } else if (!disabled && !missingVisionApiKey && canSubmit && !hasPendingUploads) {
                   void handleSubmit()
@@ -664,7 +679,9 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
               size="icon"
               className="flex-shrink-0 bg-slate-600 text-white dark:bg-white dark:text-slate-900 rounded-full cursor-pointer h-10 w-10 md:h-11 md:w-11 mb-1 -mr-0.5 md:mr-0 md:mb-1.5 touch-manipulation disabled:bg-white/60 disabled:text-slate-700"
             >
-              {canCancel ? (
+              {hasTextToSend ? (
+                <ArrowUp className="h-5 w-5 md:h-6 md:w-6" />
+              ) : canCancel ? (
                 <div className="w-3 h-3 md:w-4 md:h-4 rounded-xs bg-current" />
               ) : (
                 <ArrowUp className="h-5 w-5 md:h-6 md:w-6" />

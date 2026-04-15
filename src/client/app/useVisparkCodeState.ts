@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react"
 import { useNavigate } from "react-router-dom"
+import { useShallow } from "zustand/react/shallow"
 import { APP_NAME } from "../../shared/branding"
 import {
   DEFAULT_VISION_MODEL_OPTIONS,
@@ -8,10 +9,12 @@ import {
   type AppSettingsSnapshot,
   type AskUserQuestionAnswerMap,
   type ChatAttachment,
+  type ChatDiffSnapshot,
   type ChatHistoryPage,
   type KeybindingsSnapshot,
   type ModelOptions,
   type ProviderCatalogEntry,
+  type QueuedChatMessage,
   type TranscriptEntry,
   type UpdateInstallResult,
   type UpdateSnapshot,
@@ -38,6 +41,7 @@ function sameRuntime(left: ChatSnapshot["runtime"] | null | undefined, right: Ch
     && left.localPath === right.localPath
     && left.title === right.title
     && left.status === right.status
+    && left.lastError === right.lastError
     && left.isDraining === right.isDraining
     && left.provider === right.provider
     && left.planMode === right.planMode
@@ -66,7 +70,42 @@ function sameHistory(left: ChatSnapshot["history"] | null | undefined, right: Ch
     && left.recentLimit === right.recentLimit
 }
 
-function sameDiffs(left: ChatSnapshot["diffs"] | null | undefined, right: ChatSnapshot["diffs"] | null | undefined) {
+function sameQueuedMessage(left: QueuedChatMessage, right: QueuedChatMessage) {
+  return left.id === right.id
+    && left.content === right.content
+    && left.createdAt === right.createdAt
+    && left.provider === right.provider
+    && left.model === right.model
+    && left.planMode === right.planMode
+    && JSON.stringify(left.modelOptions) === JSON.stringify(right.modelOptions)
+    && sameAttachmentArray(left.attachments, right.attachments)
+}
+
+function sameAttachmentArray(left: ChatAttachment[], right: ChatAttachment[]) {
+  if (left === right) return true
+  if (left.length !== right.length) return false
+  return left.every((attachment, index) => {
+    const other = right[index]
+    return Boolean(other)
+      && attachment.id === other.id
+      && attachment.kind === other.kind
+      && attachment.displayName === other.displayName
+      && attachment.absolutePath === other.absolutePath
+      && attachment.relativePath === other.relativePath
+      && attachment.contentUrl === other.contentUrl
+      && attachment.mimeType === other.mimeType
+      && attachment.size === other.size
+  })
+}
+
+function sameQueuedMessages(left: ChatSnapshot["queuedMessages"] | null | undefined, right: ChatSnapshot["queuedMessages"] | null | undefined) {
+  if (left === right) return true
+  if (!left || !right) return false
+  if (left.length !== right.length) return false
+  return left.every((message, index) => sameQueuedMessage(message, right[index]!))
+}
+
+function sameDiffs(left: ChatDiffSnapshot | null | undefined, right: ChatDiffSnapshot | null | undefined) {
   if (left === right) return true
   if (!left || !right) return false
   if (left.status !== right.status) return false
@@ -121,6 +160,7 @@ function sameChatSnapshotCore(left: ChatSnapshot | null, right: ChatSnapshot | n
   if (left === right) return true
   if (!left || !right) return false
   return sameRuntime(left.runtime, right.runtime)
+    && sameQueuedMessages(left.queuedMessages, right.queuedMessages)
     && sameTranscriptEntries(left.messages, right.messages)
     && sameHistory(left.history, right.history)
     && sameProviders(left.availableProviders, right.availableProviders)
@@ -145,6 +185,11 @@ export interface OptimisticUserPrompt {
   signature: string
   requiredMatchCount: number
   entry: UserPromptEntry
+}
+
+interface OptimisticProcessingState {
+  scopeId: string
+  ackedAt: number | null
 }
 
 function serializeAttachmentSignature(attachment: ChatAttachment) {
@@ -314,31 +359,64 @@ export function shouldAutoFollowTranscript(distanceFromBottom: number) {
 export function getUiUpdateRestartReconnectAction(
   phase: string | null,
   connectionStatus: SocketStatus
-): "none" | "awaiting_reconnect" | "clear" {
+): "none" | "awaiting_server_ready" {
   if (phase === "awaiting_disconnect" && connectionStatus === "disconnected") {
-    return "awaiting_reconnect"
-  }
-
-  if (phase === "awaiting_reconnect" && connectionStatus === "connected") {
-    return "clear"
+    return "awaiting_server_ready"
   }
 
   return "none"
 }
 
-const FIXED_TRANSCRIPT_PADDING_BOTTOM = 320
 const UI_UPDATE_RESTART_STORAGE_KEY = "vispark-code:ui-update-restart"
+export const TRANSCRIPT_PADDING_BOTTOM_OFFSET = 30
+const UI_UPDATE_RELOAD_REQUEST_STORAGE_KEY = "vispark-code:last-update-reload-request"
+
+export function getTranscriptPaddingBottom(inputHeight: number) {
+  return inputHeight + TRANSCRIPT_PADDING_BOTTOM_OFFSET
+}
+
+export function getNextMeasuredInputHeight(previousHeight: number, measuredHeight: number) {
+  return measuredHeight > 0 ? measuredHeight : previousHeight
+}
 
 function getUiUpdateRestartPhase() {
   return window.sessionStorage.getItem(UI_UPDATE_RESTART_STORAGE_KEY)
 }
 
-function setUiUpdateRestartPhase(phase: "awaiting_disconnect" | "awaiting_reconnect") {
+function setUiUpdateRestartPhase(phase: "awaiting_disconnect" | "awaiting_server_ready") {
   window.sessionStorage.setItem(UI_UPDATE_RESTART_STORAGE_KEY, phase)
 }
 
 function clearUiUpdateRestartPhase() {
   window.sessionStorage.removeItem(UI_UPDATE_RESTART_STORAGE_KEY)
+}
+
+export function shouldHandleUiUpdateReloadRequest(
+  reloadRequestedAt: number | null | undefined,
+  lastHandledReloadRequest: string | null
+) {
+  if (!reloadRequestedAt) return false
+  return String(reloadRequestedAt) !== lastHandledReloadRequest
+}
+
+function getLastHandledUiUpdateReloadRequest() {
+  return window.sessionStorage.getItem(UI_UPDATE_RELOAD_REQUEST_STORAGE_KEY)
+}
+
+function setLastHandledUiUpdateReloadRequest(reloadRequestedAt: number) {
+  window.sessionStorage.setItem(UI_UPDATE_RELOAD_REQUEST_STORAGE_KEY, String(reloadRequestedAt))
+}
+
+async function isServerReady() {
+  const response = await fetch("/health", {
+    method: "GET",
+    cache: "no-store",
+    headers: {
+      Accept: "application/json",
+    },
+  })
+
+  return response.ok
 }
 
 export interface ProjectRequest {
@@ -405,8 +483,10 @@ export interface VisparkCodeState {
   scrollRef: RefObject<HTMLDivElement | null>
   inputRef: RefObject<HTMLDivElement | null>
   messages: ReturnType<typeof processTranscriptMessages>
+  queuedMessages: QueuedChatMessage[]
   latestToolIds: ReturnType<typeof getLatestToolIds>
   runtime: ChatSnapshot["runtime"] | null
+  runtimeStatus: string | null
   isHistoryLoading: boolean
   hasOlderHistory: boolean
   availableProviders: ProviderCatalogEntry[]
@@ -431,7 +511,10 @@ export interface VisparkCodeState {
   handlePickDirectory: (title?: string) => Promise<string | null>
   handleCheckForUpdates: (options?: { force?: boolean }) => Promise<void>
   handleInstallUpdate: () => Promise<void>
-  handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean }) => Promise<void>
+  handleSignOut: () => Promise<void>
+  handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; attachments?: ChatAttachment[] }) => Promise<void>
+  handleSteerQueuedMessage: (queuedMessageId: string) => Promise<void>
+  handleRemoveQueuedMessage: (queuedMessageId: string) => Promise<void>
   handleCancel: () => Promise<void>
   handleStopDraining: () => Promise<void>
   handleDeleteChat: (chat: SidebarChatRow) => Promise<void>
@@ -484,14 +567,12 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
   const [startingLocalPath, setStartingLocalPath] = useState<string | null>(null)
   const [pendingChatId, setPendingChatId] = useState<string | null>(null)
   const [optimisticUserPrompts, setOptimisticUserPrompts] = useState<OptimisticUserPrompt[]>([])
+  const [optimisticProcessing, setOptimisticProcessing] = useState<OptimisticProcessingState | null>(null)
   const [focusEpoch, setFocusEpoch] = useState(0)
   const sendToStartingProfilesRef = useRef<Map<string, SendToStartingTrace>>(new Map())
-  const draftByChatId = useChatInputStore((state) => state.drafts)
-  const attachmentDraftsByChatId = useChatInputStore((state) => state.attachmentDrafts)
-  const draftChatIds = useMemo(() => Object.keys(draftByChatId), [draftByChatId])
-  const attachmentDraftChatIds = useMemo(
-    () => Object.keys(attachmentDraftsByChatId),
-    [attachmentDraftsByChatId]
+  const draftChatIds = useChatInputStore(useShallow((state) => Object.keys(state.drafts).sort()))
+  const attachmentDraftChatIds = useChatInputStore(
+    useShallow((state) => Object.keys(state.attachmentDrafts).sort())
   )
   const chatSubscriptionDebugRef = useRef(0)
   const lastStartingRenderedTraceIdRef = useRef<string | null>(null)
@@ -501,7 +582,6 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
   })
   const editorLabel = getEditorPresetLabel(useTerminalPreferencesStore((store) => store.editorPreset))
   const transcriptAutoScroll = useChatPreferencesStore((store) => store.transcriptAutoScroll)
-
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLDivElement>(null)
   const initialScrollCompletedRef = useRef(false)
@@ -557,15 +637,60 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
   }, [connectionStatus, socket])
 
   useEffect(() => {
-    const phase = getUiUpdateRestartPhase()
-    const reconnectAction = getUiUpdateRestartReconnectAction(phase, connectionStatus)
-    if (reconnectAction === "awaiting_reconnect") {
-      setUiUpdateRestartPhase("awaiting_reconnect")
+    const reloadRequestedAt = updateSnapshot?.reloadRequestedAt
+    if (!shouldHandleUiUpdateReloadRequest(reloadRequestedAt, getLastHandledUiUpdateReloadRequest())) {
+      return
+    }
+    if (!reloadRequestedAt) {
       return
     }
 
-    if (reconnectAction === "clear") {
-      clearUiUpdateRestartPhase()
+    setLastHandledUiUpdateReloadRequest(reloadRequestedAt)
+    setUiUpdateRestartPhase("awaiting_disconnect")
+  }, [updateSnapshot?.reloadRequestedAt])
+
+  useEffect(() => {
+    const phase = getUiUpdateRestartPhase()
+    const reconnectAction = getUiUpdateRestartReconnectAction(phase, connectionStatus)
+    if (reconnectAction === "awaiting_server_ready") {
+      setUiUpdateRestartPhase("awaiting_server_ready")
+      return
+    }
+  }, [connectionStatus])
+
+  useEffect(() => {
+    if (getUiUpdateRestartPhase() !== "awaiting_server_ready") {
+      return
+    }
+
+    let cancelled = false
+    let timeoutId: number | null = null
+
+    const pollServerReadiness = async () => {
+      try {
+        if (await isServerReady()) {
+          if (cancelled) return
+          clearUiUpdateRestartPhase()
+          window.location.reload()
+          return
+        }
+      } catch {
+        // Keep polling while the process restarts.
+      }
+
+      if (cancelled) return
+      timeoutId = window.setTimeout(() => {
+        void pollServerReadiness()
+      }, 500)
+    }
+
+    void pollServerReadiness()
+
+    return () => {
+      cancelled = true
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId)
+      }
     }
   }, [connectionStatus])
 
@@ -835,11 +960,16 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
   const messages = useMemo(() => processTranscriptMessages(transcriptEntries), [transcriptEntries])
   const latestToolIds = useMemo(() => getLatestToolIds(messages), [messages])
   const runtime = activeChatSnapshot?.runtime ?? null
+  const queuedMessages = activeChatSnapshot?.queuedMessages ?? []
+  const optimisticRuntimeStatus = optimisticProcessing?.scopeId === optimisticScopeId && (!runtime || runtime.status === "idle")
+    ? "starting"
+    : null
+  const effectiveRuntimeStatus = optimisticRuntimeStatus ?? runtime?.status ?? null
   const availableProviders = activeChatSnapshot?.availableProviders ?? PROVIDERS
-  const isProcessing = isProcessingStatus(runtime?.status)
-  const canCancel = canCancelStatus(runtime?.status)
+  const isProcessing = isProcessingStatus(effectiveRuntimeStatus ?? undefined)
+  const canCancel = canCancelStatus(effectiveRuntimeStatus ?? undefined)
   const isDraining = runtime?.isDraining ?? false
-  const transcriptPaddingBottom = FIXED_TRANSCRIPT_PADDING_BOTTOM
+  const transcriptPaddingBottom = getTranscriptPaddingBottom(inputHeight)
   const showScrollButton = !isAtBottom && messages.length > 0
   const fallbackLocalProjectPath = localProjects?.projects[0]?.localPath ?? null
   const hasVisionApiKey = appSettings?.visionApiKey.trim().length ? true : false
@@ -853,6 +983,32 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     ?? sidebarData.projectGroups[0]?.groupKey
     ?? fallbackLocalProjectPath
   )
+
+  useEffect(() => {
+    if (optimisticProcessing?.scopeId !== optimisticScopeId) {
+      return
+    }
+    if (runtime?.status && runtime.status !== "idle") {
+      setOptimisticProcessing(null)
+    }
+  }, [optimisticProcessing, optimisticScopeId, runtime?.status])
+
+  useEffect(() => {
+    if (!optimisticProcessing?.ackedAt || optimisticProcessing.scopeId !== optimisticScopeId) {
+      return
+    }
+    if (runtime?.status && runtime.status !== "idle") {
+      return
+    }
+    const timeoutId = window.setTimeout(() => {
+      setOptimisticProcessing((current) => (
+        current?.scopeId === optimisticScopeId && current.ackedAt === optimisticProcessing.ackedAt
+          ? null
+          : current
+      ))
+    }, 300)
+    return () => window.clearTimeout(timeoutId)
+  }, [optimisticProcessing, optimisticScopeId, runtime?.status])
 
   useEffect(() => {
     if (!activeChatId || runtime?.status !== "starting") {
@@ -982,7 +1138,6 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
   const scrollToBottom = useCallback(() => {
     enableAutoFollow("smooth")
   }, [enableAutoFollow])
-
   const loadOlderHistory = useCallback(async () => {
     if (!activeChatId || !historyCursor || isHistoryLoading || !hasOlderHistory) {
       return
@@ -1121,15 +1276,59 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     }
   }, [dialog, socket])
 
+  const handleSignOut = useCallback(async () => {
+    try {
+      const response = await fetch("/auth/logout", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+        },
+      })
+
+      if (!response.ok) {
+        throw new Error(`Sign out failed with status ${response.status}`)
+      }
+
+      setCommandError(null)
+      window.location.reload()
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }, [])
+
   const handleSend = useCallback(async (
     content: string,
     options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; attachments?: import("../../shared/types").ChatAttachment[] }
   ) => {
     const attachments = options?.attachments ?? []
+    if (activeChatId && isProcessing) {
+      try {
+        await socket.command<{ queuedMessageId: string }>({
+          type: "message.enqueue",
+          chatId: activeChatId,
+          content,
+          attachments,
+          provider: options?.provider,
+          model: options?.model,
+          modelOptions: options?.modelOptions,
+          planMode: options?.planMode,
+        })
+        setCommandError(null)
+        return
+      } catch (error) {
+        setCommandError(error instanceof Error ? error.message : String(error))
+        throw error
+      }
+    }
+
     const optimisticId = generateUUID()
     const clientTraceId = generateUUID()
     const signature = getUserPromptSignature(content, attachments)
     const optimisticScopeId = activeChatId ?? NEW_CHAT_OPTIMISTIC_SCOPE
+    setOptimisticProcessing({
+      scopeId: optimisticScopeId,
+      ackedAt: null,
+    })
     const sendTrace: SendToStartingTrace = {
       traceId: clientTraceId,
       optimisticId,
@@ -1182,8 +1381,6 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
         throw new Error("Open a project first")
       }
 
-      enableAutoFollow("auto")
-
       const result = await socket.command<{ chatId?: string }>({
         type: "chat.send",
         chatId: activeChatId ?? undefined,
@@ -1198,6 +1395,14 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
       })
       sendTrace.ackAt = performance.now()
       sendTrace.serverChatId = result.chatId ?? sendTrace.serverChatId
+      setOptimisticProcessing((current) => {
+        if (!current) return current
+        const nextScopeId = !activeChatId && result.chatId ? result.chatId : current.scopeId
+        return {
+          scopeId: nextScopeId,
+          ackedAt: performance.now(),
+        }
+      })
       logSendToStartingTrace(sendTrace, "chat_send_ack_received", {
         resultChatId: result.chatId ?? null,
       })
@@ -1217,6 +1422,7 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
       setCommandError(null)
     } catch (error) {
       setOptimisticUserPrompts((current) => current.filter((prompt) => prompt.id !== optimisticId))
+      setOptimisticProcessing(null)
       logSendToStartingTrace(sendTrace, "handle_send_failed", {
         error: error instanceof Error ? error.message : String(error),
       })
@@ -1224,7 +1430,35 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
       setCommandError(error instanceof Error ? error.message : String(error))
       throw error
     }
-  }, [activeChatId, fallbackLocalProjectPath, navigate, optimisticUserPrompts, selectedProjectId, serverTranscriptEntries, sidebarData.projectGroups, socket])
+  }, [activeChatId, fallbackLocalProjectPath, isProcessing, navigate, optimisticUserPrompts, selectedProjectId, serverTranscriptEntries, sidebarData.projectGroups, socket])
+
+  const handleSteerQueuedMessage = useCallback(async (queuedMessageId: string) => {
+    if (!activeChatId) return
+    try {
+      await socket.command({
+        type: "message.steer",
+        chatId: activeChatId,
+        queuedMessageId,
+      })
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }, [activeChatId, socket])
+
+  const handleRemoveQueuedMessage = useCallback(async (queuedMessageId: string) => {
+    if (!activeChatId) return
+    try {
+      await socket.command({
+        type: "message.dequeue",
+        chatId: activeChatId,
+        queuedMessageId,
+      })
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }, [activeChatId, socket])
 
   const handleCancel = useCallback(async () => {
     if (!activeChatId) return
@@ -1437,8 +1671,10 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     scrollRef,
     inputRef,
     messages,
+    queuedMessages,
     latestToolIds,
     runtime,
+    runtimeStatus: effectiveRuntimeStatus,
     isHistoryLoading,
     hasOlderHistory,
     availableProviders,
@@ -1463,7 +1699,10 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     handlePickDirectory,
     handleCheckForUpdates,
     handleInstallUpdate,
+    handleSignOut,
     handleSend,
+    handleSteerQueuedMessage,
+    handleRemoveQueuedMessage,
     handleCancel,
     handleStopDraining,
     handleDeleteChat,

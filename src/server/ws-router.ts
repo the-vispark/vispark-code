@@ -41,6 +41,48 @@ function logSendToStartingProfile(
   }))
 }
 
+function countSubscriptionsByTopic(ws: ServerWebSocket<ClientState>) {
+  let sidebar = 0
+  let chat = 0
+  let localProjects = 0
+  let update = 0
+  let keybindings = 0
+  let terminal = 0
+
+  for (const topic of ws.data.subscriptions.values()) {
+    switch (topic.type) {
+      case "sidebar":
+        sidebar += 1
+        break
+      case "chat":
+        chat += 1
+        break
+      case "local-projects":
+        localProjects += 1
+        break
+      case "update":
+        update += 1
+        break
+      case "keybindings":
+        keybindings += 1
+        break
+      case "terminal":
+        terminal += 1
+        break
+    }
+  }
+
+  return {
+    total: ws.data.subscriptions.size,
+    sidebar,
+    chat,
+    localProjects,
+    update,
+    keybindings,
+    terminal,
+  }
+}
+
 export interface ClientState {
   subscriptions: Map<string, SubscriptionTopic>
   snapshotSignatures: Map<string, string>
@@ -60,6 +102,16 @@ interface CreateWsRouterArgs {
   machineDisplayName: string
   updateManager?: UpdateManager | null
   clearCachedSourceData?: () => void
+}
+
+interface SnapshotBroadcastFilter {
+  includeSidebar?: boolean
+  includeLocalProjects?: boolean
+  includeUpdate?: boolean
+  includeKeybindings?: boolean
+  chatIds?: Set<string>
+  projectIds?: Set<string>
+  terminalIds?: Set<string>
 }
 
 function send(ws: ServerWebSocket<ClientState>, message: ServerEnvelope) {
@@ -110,6 +162,9 @@ export function createWsRouter({
   clearCachedSourceData = clearSourceSyncData,
 }: CreateWsRouterArgs) {
   const sockets = new Set<ServerWebSocket<ClientState>>()
+  let pendingBroadcastTimer: ReturnType<typeof setTimeout> | null = null
+  let pendingBroadcastAll = false
+  const pendingBroadcastChatIds = new Set<string>()
   const resolvedDiffStore = diffStore ?? {
     getSnapshot: () => ({ status: "unknown", branchName: undefined, defaultBranchName: undefined, hasOriginRemote: undefined, originRepoSlug: undefined, hasUpstream: undefined, aheadCount: undefined, behindCount: undefined, lastFetchedAt: undefined, files: [] as const, branchHistory: { entries: [] as const } }),
     refreshSnapshot: async () => false,
@@ -128,9 +183,13 @@ export function createWsRouter({
   }
 
   function getProtectedChatIds() {
+    const activeStatuses = agent.getActiveStatuses()
+    const drainingChatIds = typeof agent.getDrainingChatIds === "function"
+      ? agent.getDrainingChatIds()
+      : new Set<string>()
     return new Set([
-      ...agent.getActiveStatuses().keys(),
-      ...agent.getDrainingChatIds().values(),
+      ...activeStatuses.keys(),
+      ...drainingChatIds.values(),
     ])
   }
 
@@ -153,21 +212,75 @@ export function createWsRouter({
   }
 
   async function maybePruneStaleEmptyChats(extraSockets?: Iterable<ServerWebSocket<ClientState>>) {
-    await store.pruneStaleEmptyChats?.({
-      activeChatIds: getProtectedChatIds(),
-      protectedChatIds: getProtectedDraftChatIds(extraSockets),
+    const startedAt = performance.now()
+    const activeChatIds = getProtectedChatIds()
+    const protectedDraftChatIds = getProtectedDraftChatIds(extraSockets)
+    const prunedChatIds = await store.pruneStaleEmptyChats?.({
+      activeChatIds,
+      protectedChatIds: protectedDraftChatIds,
     })
+    if (isSendToStartingProfilingEnabled()) {
+      console.log("[vispark-code/send->starting][server]", JSON.stringify({
+        stage: "ws.prune_stale_empty_chats",
+        elapsedMs: Number((performance.now() - startedAt).toFixed(1)),
+        activeChatCount: activeChatIds.size,
+        protectedDraftChatCount: protectedDraftChatIds.size,
+        prunedCount: prunedChatIds?.length ?? 0,
+        totalChatCount: store.state.chatsById.size,
+        totalProjectCount: store.state.projectsById.size,
+      }))
+    }
+  }
+
+  function shouldIncludeTopic(topic: SubscriptionTopic, filter?: SnapshotBroadcastFilter) {
+    if (!filter) {
+      return true
+    }
+
+    if (topic.type === "sidebar") {
+      return Boolean(filter.includeSidebar)
+    }
+    if (topic.type === "local-projects") {
+      return Boolean(filter.includeLocalProjects)
+    }
+    if (topic.type === "update") {
+      return Boolean(filter.includeUpdate)
+    }
+    if (topic.type === "keybindings") {
+      return Boolean(filter.includeKeybindings)
+    }
+    if (topic.type === "chat") {
+      return filter.chatIds?.has(topic.chatId) ?? false
+    }
+    if (topic.type === "terminal") {
+      return filter.terminalIds?.has(topic.terminalId) ?? false
+    }
+
+    return true
   }
 
   function createEnvelope(id: string, topic: SubscriptionTopic): ServerEnvelope {
     if (topic.type === "sidebar") {
+      const startedAt = performance.now()
+      const data = deriveSidebarData(store.state, agent.getActiveStatuses())
+      if (isSendToStartingProfilingEnabled()) {
+        const totalChats = data.projectGroups.reduce((count, group) => count + group.chats.length, 0)
+        console.log("[vispark-code/send->starting][server]", JSON.stringify({
+          stage: "ws.sidebar_snapshot_built",
+          elapsedMs: Number((performance.now() - startedAt).toFixed(1)),
+          projectGroupCount: data.projectGroups.length,
+          chatCount: totalChats,
+          totalChatCount: store.state.chatsById.size,
+          totalProjectCount: store.state.projectsById.size,
+        }))
+      }
       return {
         v: PROTOCOL_VERSION,
         type: "snapshot",
         id,
         snapshot: {
           type: "sidebar",
-          data: deriveSidebarData(store.state, agent.getActiveStatuses()),
+          data,
         },
       }
     }
@@ -226,6 +339,7 @@ export function createWsRouter({
             lastCheckedAt: null,
             error: null,
             installAction: "restart",
+            reloadRequestedAt: null,
           },
         },
       }
@@ -273,12 +387,21 @@ export function createWsRouter({
     }
   }
 
-  async function pushSnapshots(ws: ServerWebSocket<ClientState>, options?: { skipPrune?: boolean }) {
+  async function pushSnapshots(
+    ws: ServerWebSocket<ClientState>,
+    options?: { skipPrune?: boolean; filter?: SnapshotBroadcastFilter }
+  ) {
+    const pushStartedAt = performance.now()
     if (!options?.skipPrune) {
       await maybePruneStaleEmptyChats([ws])
     }
     const snapshotSignatures = ensureSnapshotSignatures(ws)
+    let sentCount = 0
+    let skippedCount = 0
     for (const [id, topic] of ws.data.subscriptions.entries()) {
+      if (!shouldIncludeTopic(topic, options?.filter)) {
+        continue
+      }
       const envelopeStartedAt = performance.now()
       const envelope = createEnvelope(id, topic)
       const createdAt = performance.now()
@@ -286,6 +409,7 @@ export function createWsRouter({
       const signature = JSON.stringify(envelope.snapshot)
       const signatureReadyAt = performance.now()
       if (snapshotSignatures.get(id) === signature) {
+        skippedCount += 1
         continue
       }
       snapshotSignatures.set(id, signature)
@@ -301,6 +425,7 @@ export function createWsRouter({
         })
       }
       const payloadBytes = send(ws, envelope)
+      sentCount += 1
       if (topic.type === "chat" && envelope.snapshot.type === "chat" && envelope.snapshot.data?.runtime.status === "starting") {
         const profile = agent.getActiveTurnProfile(topic.chatId)
         logSendToStartingProfile(profile?.traceId, profile?.startedAt, "ws.snapshot_send_completed", {
@@ -309,13 +434,116 @@ export function createWsRouter({
         })
       }
     }
+    if (isSendToStartingProfilingEnabled()) {
+      console.log("[vispark-code/send->starting][server]", JSON.stringify({
+        stage: "ws.push_snapshots_completed",
+        elapsedMs: Number((performance.now() - pushStartedAt).toFixed(1)),
+        skipPrune: Boolean(options?.skipPrune),
+        sentCount,
+        skippedCount,
+        ...countSubscriptionsByTopic(ws),
+      }))
+    }
   }
 
   async function broadcastSnapshots() {
-    await maybePruneStaleEmptyChats()
+    const startedAt = performance.now()
+    let socketCount = 0
     for (const ws of sockets) {
+      socketCount += 1
       await pushSnapshots(ws, { skipPrune: true })
     }
+    if (isSendToStartingProfilingEnabled()) {
+      console.log("[vispark-code/send->starting][server]", JSON.stringify({
+        stage: "ws.broadcast_snapshots_completed",
+        elapsedMs: Number((performance.now() - startedAt).toFixed(1)),
+        pruneMs: 0,
+        socketCount,
+        totalChatCount: store.state.chatsById.size,
+        totalProjectCount: store.state.projectsById.size,
+      }))
+    }
+  }
+
+  async function broadcastFilteredSnapshots(filter: SnapshotBroadcastFilter) {
+    const startedAt = performance.now()
+    let socketCount = 0
+    for (const ws of sockets) {
+      socketCount += 1
+      await pushSnapshots(ws, { skipPrune: true, filter })
+    }
+    if (isSendToStartingProfilingEnabled()) {
+      console.log("[vispark-code/send->starting][server]", JSON.stringify({
+        stage: "ws.broadcast_filtered_snapshots_completed",
+        elapsedMs: Number((performance.now() - startedAt).toFixed(1)),
+        socketCount,
+        includeSidebar: Boolean(filter.includeSidebar),
+        chatCount: filter.chatIds?.size ?? 0,
+        projectCount: filter.projectIds?.size ?? 0,
+      }))
+    }
+  }
+
+  function scheduleBroadcast() {
+    pendingBroadcastAll = true
+    pendingBroadcastChatIds.clear()
+    if (pendingBroadcastTimer) {
+      return
+    }
+    pendingBroadcastTimer = setTimeout(() => {
+      pendingBroadcastTimer = null
+      const shouldBroadcastAll = pendingBroadcastAll
+      const chatIds = new Set(pendingBroadcastChatIds)
+      pendingBroadcastAll = false
+      pendingBroadcastChatIds.clear()
+      if (shouldBroadcastAll) {
+        void broadcastSnapshots()
+        return
+      }
+      if (chatIds.size > 0) {
+        void broadcastFilteredSnapshots({
+          includeSidebar: true,
+          chatIds,
+        })
+      }
+    }, 16)
+  }
+
+  function scheduleChatStateBroadcast(chatId: string) {
+    if (!pendingBroadcastAll) {
+      pendingBroadcastChatIds.add(chatId)
+    }
+    if (pendingBroadcastTimer) {
+      return
+    }
+    pendingBroadcastTimer = setTimeout(() => {
+      pendingBroadcastTimer = null
+      const shouldBroadcastAll = pendingBroadcastAll
+      const chatIds = new Set(pendingBroadcastChatIds)
+      pendingBroadcastAll = false
+      pendingBroadcastChatIds.clear()
+      if (shouldBroadcastAll) {
+        void broadcastSnapshots()
+        return
+      }
+      if (chatIds.size > 0) {
+        void broadcastFilteredSnapshots({
+          includeSidebar: true,
+          chatIds,
+        })
+      }
+    }, 16)
+  }
+
+  async function broadcastChatAndSidebar(chatId: string) {
+    await broadcastFilteredSnapshots({
+      includeSidebar: true,
+      chatIds: new Set([chatId]),
+    })
+  }
+
+  async function broadcastChatStateImmediately(chatId: string) {
+    await broadcastChatAndSidebar(chatId)
   }
 
   function broadcastError(message: string) {
@@ -438,6 +666,7 @@ export function createWsRouter({
                 lastCheckedAt: Date.now(),
                 error: "Update manager unavailable.",
                 installAction: "restart",
+                reloadRequestedAt: null,
               }
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
           return
@@ -518,24 +747,28 @@ export function createWsRouter({
         case "chat.create": {
           const chat = await store.createChat(command.projectId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { chatId: chat.id } })
-          break
+          await broadcastChatAndSidebar(chat.id)
+          return
         }
         case "chat.rename": {
           await store.renameChat(command.chatId, command.title)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          break
+          await broadcastChatAndSidebar(command.chatId)
+          return
         }
         case "chat.delete": {
           await agent.cancel(command.chatId)
           await agent.closeChat(command.chatId)
           await store.deleteChat(command.chatId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          break
+          await broadcastFilteredSnapshots({ includeSidebar: true })
+          return
         }
         case "chat.markRead": {
           await store.setChatReadState(command.chatId, false)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          break
+          await broadcastChatAndSidebar(command.chatId)
+          return
         }
         case "chat.setDraftProtection": {
           ws.data.protectedDraftChatIds = new Set(command.chatIds)
@@ -555,7 +788,7 @@ export function createWsRouter({
             chatId: result.chatId ?? null,
             payloadBytes,
           })
-          break
+          return
         }
         case "chat.refreshDiffs": {
           const { project } = resolveChatProject(command.chatId)
@@ -713,12 +946,12 @@ export function createWsRouter({
         case "chat.cancel": {
           await agent.cancel(command.chatId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          break
+          return
         }
         case "chat.stopDraining": {
           await agent.stopDraining(command.chatId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          break
+          return
         }
         case "chat.loadHistory": {
           const chat = store.getChat(command.chatId)
@@ -732,7 +965,25 @@ export function createWsRouter({
         case "chat.respondTool": {
           await agent.respondTool(command)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          break
+          return
+        }
+        case "message.enqueue": {
+          const result = await agent.enqueue(command)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          await broadcastChatAndSidebar(command.chatId)
+          return
+        }
+        case "message.steer": {
+          await agent.steer(command)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          await broadcastChatAndSidebar(command.chatId)
+          return
+        }
+        case "message.dequeue": {
+          await agent.dequeue(command)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          await broadcastChatAndSidebar(command.chatId)
+          return
         }
         case "terminal.create": {
           const project = store.getProject(command.projectId)
@@ -797,6 +1048,10 @@ export function createWsRouter({
       sockets.delete(ws)
     },
     broadcastSnapshots,
+    broadcastChatStateImmediately,
+    scheduleBroadcast,
+    scheduleChatStateBroadcast,
+    pruneStaleEmptyChats: () => maybePruneStaleEmptyChats(),
     async handleMessage(ws: ServerWebSocket<ClientState>, raw: string | Buffer | ArrayBuffer | Uint8Array) {
       let parsed: unknown
       try {
@@ -845,6 +1100,9 @@ export function createWsRouter({
       await handleCommand(ws, parsed)
     },
     dispose() {
+      if (pendingBroadcastTimer) {
+        clearTimeout(pendingBroadcastTimer)
+      }
       agent.setBackgroundErrorReporter?.(null)
       disposeTerminalEvents()
       disposeFileTreeEvents()

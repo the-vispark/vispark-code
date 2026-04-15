@@ -141,6 +141,7 @@ describe("getGeneralHeaderAction", () => {
       lastCheckedAt: 123,
       error: null,
       installAction: "restart",
+      reloadRequestedAt: null,
     })).toEqual({
       disabled: true,
       kind: "check",
@@ -159,6 +160,7 @@ describe("getGeneralHeaderAction", () => {
       lastCheckedAt: 123,
       error: null,
       installAction: "restart",
+      reloadRequestedAt: null,
     })).toEqual({
       disabled: false,
       kind: "update",
@@ -176,6 +178,7 @@ describe("getGeneralHeaderAction", () => {
       lastCheckedAt: 123,
       error: null,
       installAction: "restart",
+      reloadRequestedAt: null,
     })).toEqual({
       disabled: true,
       kind: "update",

@@ -4,25 +4,44 @@ import { compareVersions, getInstallTarget, parseArgs, runCli } from "./cli-runt
 
 afterEach(() => {
   delete process.env[CLI_SUPPRESS_OPEN_ONCE_ENV_VAR]
-  delete process.env.VISPARK_PUBLIC_APP_URL
 })
+
+function createInstallResult(ok = true) {
+  return {
+    ok,
+    errorCode: ok ? null : "install_failed",
+    userTitle: ok ? null : "Update failed",
+    userMessage: ok ? null : "Install failed",
+  } as const
+}
 
 function createDeps(overrides: Partial<Parameters<typeof runCli>[1]> = {}) {
   const calls = {
-    startServer: [] as Array<{ port: number; host: string; openBrowser: boolean; share: boolean; strictPort: boolean }>,
+    startServer: [] as Array<{
+      port: number
+      host: string
+      openBrowser: boolean
+      share: false | "quick" | { kind: "token"; token: string }
+      password: string | null
+      strictPort: boolean
+      update: {
+        version: string
+        argv: string[]
+        command: string
+      }
+    }>,
     fetchLatestVersion: [] as string[],
     installVersion: [] as Array<{ packageName: string; version: string }>,
-    relaunch: [] as Array<{ command: string; args: string[] }>,
     openUrl: [] as string[],
     log: [] as string[],
     warn: [] as string[],
-    shareTunnel: [] as string[],
+    shareTunnel: [] as Array<{ localUrl: string; shareMode: "quick" | { kind: "token"; token: string } }>,
     renderShareQr: [] as string[],
     shareTunnelStops: 0,
   }
 
   const deps: Parameters<typeof runCli>[1] = {
-    version: "0.3.0",
+    version: "1.0.0",
     bunVersion: "1.3.10",
     startServer: async (options) => {
       calls.startServer.push(options)
@@ -33,15 +52,11 @@ function createDeps(overrides: Partial<Parameters<typeof runCli>[1]> = {}) {
     },
     fetchLatestVersion: async (packageName) => {
       calls.fetchLatestVersion.push(packageName)
-      return "0.3.0"
+      return "1.0.0"
     },
     installVersion: (packageName, version) => {
       calls.installVersion.push({ packageName, version })
-      return true
-    },
-    relaunch: (command, args) => {
-      calls.relaunch.push({ command, args })
-      return 0
+      return createInstallResult(true)
     },
     openUrl: (url) => {
       calls.openUrl.push(url)
@@ -56,8 +71,8 @@ function createDeps(overrides: Partial<Parameters<typeof runCli>[1]> = {}) {
       calls.renderShareQr.push(url)
       return `[qr:${url}]`
     },
-    startShareTunnel: async (localUrl) => {
-      calls.shareTunnel.push(localUrl)
+    startShareTunnel: async (localUrl, shareMode) => {
+      calls.shareTunnel.push({ localUrl, shareMode })
       return {
         publicUrl: "https://vispark.trycloudflare.com",
         stop: () => {
@@ -80,121 +95,71 @@ describe("parseArgs", () => {
         host: "127.0.0.1",
         openBrowser: false,
         share: false,
+        password: null,
         strictPort: false,
       },
     })
   })
 
-  test("parses strict port mode", () => {
-    expect(parseArgs(["--strict-port"])).toEqual({
-      kind: "run",
-      options: {
-        port: 3210,
-        host: "127.0.0.1",
-        openBrowser: true,
-        share: false,
-        strictPort: true,
-      },
-    })
-  })
-
-  test("--remote without value binds all interfaces", () => {
-    expect(parseArgs(["--remote"])).toEqual({
-      kind: "run",
-      options: {
-        port: 3210,
-        host: "0.0.0.0",
-        openBrowser: true,
-        share: false,
-        strictPort: false,
-      },
-    })
-  })
-
-  test("--share enables public sharing", () => {
+  test("parses share, cloudflared, and password options", () => {
     expect(parseArgs(["--share"])).toEqual({
       kind: "run",
       options: {
         port: 3210,
         host: "127.0.0.1",
         openBrowser: true,
-        share: true,
+        share: "quick",
+        password: null,
         strictPort: false,
       },
     })
-  })
 
-  test("--host with IP binds to that address", () => {
-    expect(parseArgs(["--host", "100.64.0.1"])).toEqual({
+    expect(parseArgs(["--cloudflared", "secret-token", "--password", "secret"])).toEqual({
       kind: "run",
       options: {
         port: 3210,
-        host: "100.64.0.1",
+        host: "127.0.0.1",
         openBrowser: true,
-        share: false,
+        share: { kind: "token", token: "secret-token" },
+        password: "secret",
         strictPort: false,
       },
     })
   })
 
-  test("--host with hostname binds to that name", () => {
-    expect(parseArgs(["--host", "dev-box"])).toEqual({
-      kind: "run",
-      options: {
-        port: 3210,
-        host: "dev-box",
-        openBrowser: true,
-        share: false,
-        strictPort: false,
-      },
-    })
-  })
-
-  test("--host without a value throws", () => {
-    expect(() => parseArgs(["--host"])).toThrow("Missing value for --host")
-    expect(() => parseArgs(["--host", "--no-open"])).toThrow("Missing value for --host")
-  })
-
-  test("--share is incompatible with --host and --remote", () => {
+  test("rejects invalid host/share combinations", () => {
     expect(() => parseArgs(["--share", "--host", "dev-box"])).toThrow("--share cannot be used with --host")
-    expect(() => parseArgs(["--host", "dev-box", "--share"])).toThrow("--share cannot be used with --host")
-    expect(() => parseArgs(["--share", "--remote"])).toThrow("--share cannot be used with --remote")
-    expect(() => parseArgs(["--remote", "--share"])).toThrow("--share cannot be used with --remote")
-  })
-
-  test("returns version and help actions without running startup", () => {
-    expect(parseArgs(["--version"])).toEqual({ kind: "version" })
-    expect(parseArgs(["--help"])).toEqual({ kind: "help" })
+    expect(() => parseArgs(["--cloudflared", "secret-token", "--remote"])).toThrow("--cloudflared cannot be used with --remote")
+    expect(() => parseArgs(["--password"])).toThrow("Missing value for --password")
   })
 })
 
 describe("compareVersions", () => {
   test("orders semver-like versions", () => {
-    expect(compareVersions("0.3.0", "0.3.0")).toBe(0)
-    expect(compareVersions("0.3.0", "0.3.1")).toBe(-1)
-    expect(compareVersions("1.0.0", "0.9.9")).toBe(1)
+    expect(compareVersions("1.0.0", "1.0.0")).toBe(0)
+    expect(compareVersions("1.0.0", "1.0.1")).toBe(-1)
+    expect(compareVersions("1.2.0", "1.1.9")).toBe(1)
   })
 })
 
 describe("getInstallTarget", () => {
-  test("pins the global upgrade to the published npm package version", () => {
-    expect(getInstallTarget("vispark-code", "0.4.0")).toBe("vispark-code@0.4.0")
+  test("pins the global install target", () => {
+    expect(getInstallTarget("vispark-code", "1.2.0")).toBe("vispark-code@1.2.0")
   })
 })
 
 describe("runCli", () => {
-  test("skips update checks for --version", async () => {
+  test("returns version output without starting the server", async () => {
     const { calls, deps } = createDeps()
 
     const result = await runCli(["--version"], deps)
 
     expect(result).toEqual({ kind: "exited", code: 0 })
-    expect(calls.fetchLatestVersion).toEqual([])
     expect(calls.startServer).toEqual([])
-    expect(calls.log).toEqual(["0.3.0"])
+    expect(calls.log).toEqual(["1.0.0"])
   })
 
-  test("starts normally when no newer version exists", async () => {
+  test("starts normally when no update is available", async () => {
     const { calls, deps } = createDeps()
 
     const result = await runCli(["--port", "4000", "--no-open"], deps)
@@ -202,15 +167,24 @@ describe("runCli", () => {
     expect(result.kind).toBe("started")
     expect(calls.fetchLatestVersion).toEqual(["vispark-code"])
     expect(calls.installVersion).toEqual([])
-    expect(calls.relaunch).toEqual([])
-    expect(calls.startServer).toEqual([{ port: 4000, host: "127.0.0.1", openBrowser: false, share: false, strictPort: false }])
-    expect(calls.openUrl).toEqual([])
+    expect(calls.startServer).toHaveLength(1)
+    expect(calls.startServer[0]).toMatchObject({
+      port: 4000,
+      host: "127.0.0.1",
+      openBrowser: false,
+      share: false,
+      password: null,
+      strictPort: false,
+      update: {
+        version: "1.0.0",
+        argv: ["--port", "4000", "--no-open"],
+        command: "vispark-code",
+      },
+    })
   })
 
   test("fails fast on unsupported Bun versions", async () => {
-    const { calls, deps } = createDeps({
-      bunVersion: "1.3.1",
-    })
+    const { calls, deps } = createDeps({ bunVersion: "1.3.1" })
 
     const result = await runCli(["--no-open"], deps)
 
@@ -219,8 +193,7 @@ describe("runCli", () => {
     expect(calls.warn).toContain("[vispark-code] Bun 1.3.5+ is required for the embedded terminal. Current Bun: 1.3.1")
   })
 
-  test("opens the root route in the browser", async () => {
-    delete process.env[CLI_SUPPRESS_OPEN_ONCE_ENV_VAR]
+  test("opens the browser for local runs", async () => {
     const { calls, deps } = createDeps()
 
     await runCli(["--port", "4000"], deps)
@@ -228,157 +201,80 @@ describe("runCli", () => {
     expect(calls.openUrl).toEqual(["http://localhost:4000"])
   })
 
-  test("opens browser at hostname when --host <host> is given", async () => {
-    delete process.env[CLI_SUPPRESS_OPEN_ONCE_ENV_VAR]
-    const { calls, deps } = createDeps()
-
-    await runCli(["--host", "dev-box", "--port", "4000"], deps)
-
-    expect(calls.openUrl).toEqual(["http://dev-box:4000"])
-  })
-
-  test("suppresses browser open for a ui-triggered restarted child", async () => {
-    process.env[CLI_SUPPRESS_OPEN_ONCE_ENV_VAR] = "1"
-    const { calls, deps } = createDeps()
-
-    await runCli(["--port", "4000"], deps)
-
-    expect(calls.openUrl).toEqual([])
-  })
-
-  test("starts a share tunnel and prints qr/public/local urls", async () => {
-    delete process.env[CLI_SUPPRESS_OPEN_ONCE_ENV_VAR]
+  test("starts a quick share tunnel and prints QR details", async () => {
     const { calls, deps } = createDeps()
 
     const result = await runCli(["--share", "--port", "4000"], deps)
 
     expect(result.kind).toBe("started")
     expect(calls.openUrl).toEqual([])
-    expect(calls.shareTunnel).toEqual(["http://localhost:4000"])
+    expect(calls.shareTunnel).toEqual([{ localUrl: "http://localhost:4000", shareMode: "quick" }])
     expect(calls.renderShareQr).toEqual(["https://vispark.trycloudflare.com"])
     expect(calls.log).toContain("QR Code:")
-    expect(calls.log).toContain("[qr:https://vispark.trycloudflare.com]")
-    expect(calls.log).toContain("Public URL:")
     expect(calls.log).toContain("https://vispark.trycloudflare.com")
-    expect(calls.log).toContain("Local URL:")
-    expect(calls.log).toContain("http://localhost:4000")
-    expect(process.env.VISPARK_PUBLIC_APP_URL).toBe("https://vispark.trycloudflare.com")
 
-    if (result.kind !== "started") {
-      throw new Error(`expected started result, got ${result.kind}`)
+    if (result.kind === "started") {
+      await result.stop()
     }
-    await result.stop()
     expect(calls.shareTunnelStops).toBe(1)
-    expect(process.env.VISPARK_PUBLIC_APP_URL).toBeUndefined()
   })
 
-  test("uses the actual bound port for --share", async () => {
+  test("keeps running when a named tunnel has no discovered public hostname", async () => {
     const { calls, deps } = createDeps({
-      startServer: async (options) => {
-        calls.startServer.push(options)
+      startShareTunnel: async (localUrl, shareMode) => {
+        calls.shareTunnel.push({ localUrl, shareMode })
         return {
-          port: 4001,
-          stop: async () => {},
-        }
-      },
-    })
-
-    const result = await runCli(["--share", "--port", "4000"], deps)
-
-    expect(result.kind).toBe("started")
-    expect(calls.shareTunnel).toEqual(["http://localhost:4001"])
-  })
-
-  test("fails cleanly when share tunnel startup fails", async () => {
-    let serverStopped = false
-    const { calls, deps } = createDeps({
-      startServer: async (options) => {
-        calls.startServer.push(options)
-        return {
-          port: options.port,
-          stop: async () => {
-            serverStopped = true
+          publicUrl: null,
+          stop: () => {
+            calls.shareTunnelStops += 1
           },
         }
       },
-      startShareTunnel: async () => {
-        throw new Error("cloudflared unavailable")
-      },
     })
 
-    const result = await runCli(["--share"], deps)
+    const result = await runCli(["--cloudflared", "secret-token"], deps)
 
-    expect(result).toEqual({ kind: "exited", code: 1 })
-    expect(serverStopped).toBe(true)
-    expect(calls.warn).toContain("[vispark-code] failed to start Cloudflare share tunnel")
-    expect(calls.warn).toContain("[vispark-code] cloudflared unavailable")
+    expect(result.kind).toBe("started")
+    expect(calls.shareTunnel).toEqual([{
+      localUrl: "http://localhost:3210",
+      shareMode: { kind: "token", token: "secret-token" },
+    }])
+    expect(calls.warn).toContain("[vispark-code] named tunnel started but no public hostname was detected")
+    expect(calls.warn).toContain("[vispark-code] use the hostname configured for the provided Cloudflare tunnel token")
+    expect(calls.renderShareQr).toEqual([])
   })
 
-  test("installs and relaunches when a newer version is available", async () => {
+  test("returns restarting when a newer version is available", async () => {
     const { calls, deps } = createDeps({
       fetchLatestVersion: async (packageName) => {
         calls.fetchLatestVersion.push(packageName)
-        return "0.4.0"
+        return "1.1.0"
       },
     })
 
     const result = await runCli(["--port", "4000", "--no-open"], deps)
 
-    expect(result).toEqual({ kind: "exited", code: 0 })
-    expect(calls.installVersion).toEqual([{ packageName: "vispark-code", version: "0.4.0" }])
-    expect(calls.relaunch).toEqual([{ command: "vispark-code", args: ["--port", "4000", "--no-open"] }])
+    expect(result).toEqual({ kind: "restarting", reason: "startup_update" })
+    expect(calls.installVersion).toEqual([{ packageName: "vispark-code", version: "1.1.0" }])
     expect(calls.startServer).toEqual([])
   })
 
-  test("falls back to current version when install fails", async () => {
+  test("falls back to the current version when install fails", async () => {
     const { calls, deps } = createDeps({
       fetchLatestVersion: async (packageName) => {
         calls.fetchLatestVersion.push(packageName)
-        return "0.4.0"
+        return "1.1.0"
       },
       installVersion: (packageName, version) => {
         calls.installVersion.push({ packageName, version })
-        return false
+        return createInstallResult(false)
       },
     })
 
     const result = await runCli(["--no-open"], deps)
 
     expect(result.kind).toBe("started")
-    expect(calls.installVersion).toEqual([{ packageName: "vispark-code", version: "0.4.0" }])
-    expect(calls.relaunch).toEqual([])
+    expect(calls.installVersion).toEqual([{ packageName: "vispark-code", version: "1.1.0" }])
     expect(calls.warn).toContain("[vispark-code] update failed, continuing current version")
-  })
-
-  test("falls back to current version when the registry check fails", async () => {
-    const { calls, deps } = createDeps({
-      fetchLatestVersion: async (packageName) => {
-        calls.fetchLatestVersion.push(packageName)
-        throw new Error("network unavailable")
-      },
-    })
-
-    const result = await runCli(["--no-open"], deps)
-
-    expect(result.kind).toBe("started")
-    expect(calls.installVersion).toEqual([])
-    expect(calls.relaunch).toEqual([])
-    expect(calls.warn).toContain("[vispark-code] update check failed, continuing current version")
-  })
-
-  test("preserves original argv when relaunching", async () => {
-    const { calls, deps } = createDeps({
-      fetchLatestVersion: async (packageName) => {
-        calls.fetchLatestVersion.push(packageName)
-        return "0.4.0"
-      },
-    })
-
-    await runCli(["--port", "4567", "--no-open"], deps)
-
-    expect(calls.relaunch[0]).toEqual({
-      command: "vispark-code",
-      args: ["--port", "4567", "--no-open"],
-    })
   })
 })

@@ -130,6 +130,10 @@ export function deriveChatSnapshot(
 
   return {
     runtime,
+    queuedMessages: (state.queuedMessagesByChatId.get(chat.id) ?? []).map((entry) => ({
+      ...entry,
+      attachments: [...entry.attachments],
+    })),
     messages: transcript.messages,
     history: transcript.history,
     diffs: getDiffs(chat.id),

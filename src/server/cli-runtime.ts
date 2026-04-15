@@ -1,24 +1,29 @@
 import process from "node:process"
 import { spawnSync } from "node:child_process"
-import { existsSync } from "node:fs"
-import path from "node:path"
 import { hasCommand, spawnDetached } from "./process-utils"
 import { APP_NAME, CLI_COMMAND, getDataDirDisplay, LOG_PREFIX, PACKAGE_NAME } from "../shared/branding"
 import { PROD_SERVER_PORT } from "../shared/ports"
+import type { ShareMode } from "../shared/share"
+import { isShareEnabled, isTokenShareMode } from "../shared/share"
+import type { UpdateInstallErrorCode } from "../shared/types"
 import { CLI_SUPPRESS_OPEN_ONCE_ENV_VAR } from "./restart"
-import {
-  logShareDetails,
-  renderTerminalQr,
-  startShareTunnel as startShareTunnelDefault,
-  type StartedShareTunnel,
-} from "./share"
+import { logShareDetails, renderTerminalQr, startShareTunnel, type StartedShareTunnel } from "./share"
 
 export interface CliOptions {
   port: number
   host: string
   openBrowser: boolean
-  share: boolean
+  share: ShareMode
+  password: string | null
   strictPort: boolean
+}
+
+export interface CliUpdateOptions {
+  version: string
+  fetchLatestVersion: (packageName: string) => Promise<string>
+  installVersion: (packageName: string, version: string) => UpdateInstallAttemptResult
+  argv: string[]
+  command: string
 }
 
 export interface StartedCli {
@@ -26,16 +31,21 @@ export interface StartedCli {
   stop: () => Promise<void>
 }
 
+export interface RestartingCli {
+  kind: "restarting"
+  reason: "startup_update" | "ui_update"
+}
+
 export interface ExitedCli {
   kind: "exited"
   code: number
 }
 
-export type CliRunResult = StartedCli | ExitedCli
+export type CliRunResult = StartedCli | RestartingCli | ExitedCli
 
 export interface UpdateInstallAttemptResult {
   ok: boolean
-  errorCode: "version_not_live_yet" | "install_failed" | "command_missing" | null
+  errorCode: UpdateInstallErrorCode | null
   userTitle: string | null
   userMessage: string | null
 }
@@ -43,15 +53,17 @@ export interface UpdateInstallAttemptResult {
 export interface CliRuntimeDeps {
   version: string
   bunVersion: string
-  startServer: (options: CliOptions) => Promise<{ port: number; stop: () => Promise<void> }>
+  startServer: (options: CliOptions & {
+    update: CliUpdateOptions
+    onMigrationProgress?: (message: string) => void
+  }) => Promise<{ port: number; stop: () => Promise<void> }>
   fetchLatestVersion: (packageName: string) => Promise<string>
-  installVersion: (packageName: string, version: string) => boolean
-  relaunch: (command: string, args: string[]) => number | null
+  installVersion: (packageName: string, version: string) => UpdateInstallAttemptResult
   openUrl: (url: string) => void
   log: (message: string) => void
   warn: (message: string) => void
   renderShareQr?: (url: string) => Promise<string>
-  startShareTunnel?: (localUrl: string) => Promise<StartedShareTunnel>
+  startShareTunnel?: (localUrl: string, shareMode: Exclude<ShareMode, false>) => Promise<StartedShareTunnel>
 }
 
 type ParsedArgs =
@@ -60,48 +72,6 @@ type ParsedArgs =
   | { kind: "version" }
 
 const MINIMUM_BUN_VERSION = "1.3.5"
-const INSTALL_REPAIR_ATTEMPTED_ENV_VAR = "VISPARK_CODE_INSTALL_REPAIR_ATTEMPTED"
-
-function getPackageRoot() {
-  return path.resolve(import.meta.dir, "..", "..")
-}
-
-function hasClientBundle(packageRoot = getPackageRoot()) {
-  return existsSync(path.join(packageRoot, "dist", "client", "index.html"))
-}
-
-function isSourceCheckout(packageRoot = getPackageRoot()) {
-  return existsSync(path.join(packageRoot, ".git"))
-}
-
-function maybeRepairMissingClientBundle(argv: string[], deps: CliRuntimeDeps) {
-  const packageRoot = getPackageRoot()
-  if (hasClientBundle(packageRoot) || isSourceCheckout(packageRoot)) {
-    return null
-  }
-
-  if (process.env[INSTALL_REPAIR_ATTEMPTED_ENV_VAR] === "1") {
-    deps.warn(`${LOG_PREFIX} installed client bundle is still missing after an automatic repair attempt`)
-    return null
-  }
-
-  deps.warn(`${LOG_PREFIX} installed client bundle is missing, reinstalling ${PACKAGE_NAME}@${deps.version}`)
-  if (!deps.installVersion(PACKAGE_NAME, deps.version)) {
-    deps.warn(`${LOG_PREFIX} repair install failed, continuing current version`)
-    return null
-  }
-
-  deps.log(`${LOG_PREFIX} restarting after repair install`)
-  process.env[INSTALL_REPAIR_ATTEMPTED_ENV_VAR] = "1"
-  const exitCode = deps.relaunch(CLI_COMMAND, argv)
-  delete process.env[INSTALL_REPAIR_ATTEMPTED_ENV_VAR]
-  if (exitCode === null) {
-    deps.warn(`${LOG_PREFIX} restart after repair failed, continuing current version`)
-    return null
-  }
-
-  return exitCode
-}
 
 function printHelp() {
   console.log(`${APP_NAME} — local-only project chat UI
@@ -113,9 +83,12 @@ Options:
   --port <number>      Port to listen on (default: ${PROD_SERVER_PORT})
   --host <host>        Bind to a specific host or IP
   --remote             Shortcut for --host 0.0.0.0
+  --share              Create a public Cloudflare quick tunnel with terminal QR
+  --cloudflared <token>
+                       Run a named Cloudflare tunnel from a token
+  --password <secret>  Require a password before loading the app
   --strict-port        Fail instead of trying another port
   --no-open            Don't open browser automatically
-  --share              Create a public share URL and print a terminal QR code
   --version            Print version and exit
   --help               Show this help message`)
 }
@@ -124,7 +97,8 @@ export function parseArgs(argv: string[]): ParsedArgs {
   let port = PROD_SERVER_PORT
   let host = "127.0.0.1"
   let openBrowser = true
-  let share = false
+  let share: ShareMode = false
+  let password: string | null = null
   let strictPort = false
   let sawHost = false
   let sawRemote = false
@@ -147,26 +121,46 @@ export function parseArgs(argv: string[]): ParsedArgs {
     if (arg === "--host") {
       const next = argv[index + 1]
       if (!next || next.startsWith("-")) throw new Error("Missing value for --host")
-      if (share) throw new Error("--share cannot be used with --host")
-      sawHost = true
+      if (isShareEnabled(share)) {
+        throw new Error(typeof share === "string" ? "--share cannot be used with --host" : "--cloudflared cannot be used with --host")
+      }
       host = next
+      sawHost = true
       index += 1
       continue
     }
     if (arg === "--remote") {
-      if (share) throw new Error("--share cannot be used with --remote")
-      sawRemote = true
+      if (isShareEnabled(share)) {
+        throw new Error(typeof share === "string" ? "--share cannot be used with --remote" : "--cloudflared cannot be used with --remote")
+      }
       host = "0.0.0.0"
-      continue
-    }
-    if (arg === "--no-open") {
-      openBrowser = false
+      sawRemote = true
       continue
     }
     if (arg === "--share") {
       if (sawHost) throw new Error("--share cannot be used with --host")
       if (sawRemote) throw new Error("--share cannot be used with --remote")
-      share = true
+      share = "quick"
+      continue
+    }
+    if (arg === "--cloudflared") {
+      if (sawHost) throw new Error("--cloudflared cannot be used with --host")
+      if (sawRemote) throw new Error("--cloudflared cannot be used with --remote")
+      const next = argv[index + 1]
+      if (!next || next.startsWith("-")) throw new Error("Missing value for --cloudflared")
+      share = { kind: "token", token: next }
+      index += 1
+      continue
+    }
+    if (arg === "--password") {
+      const next = argv[index + 1]
+      if (!next || next.startsWith("-")) throw new Error("Missing value for --password")
+      password = next
+      index += 1
+      continue
+    }
+    if (arg === "--no-open") {
+      openBrowser = false
       continue
     }
     if (arg === "--strict-port") {
@@ -183,6 +177,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
       host,
       openBrowser,
       share,
+      password,
       strictPort,
     },
   }
@@ -213,7 +208,7 @@ function normalizeVersion(version: string) {
     .filter((part) => Number.isFinite(part))
 }
 
-async function maybeSelfUpdate(argv: string[], deps: CliRuntimeDeps) {
+async function maybeSelfUpdate(_argv: string[], deps: CliRuntimeDeps) {
   if (process.env.VISPARK_CODE_DISABLE_SELF_UPDATE === "1") {
     return null
   }
@@ -223,8 +218,7 @@ async function maybeSelfUpdate(argv: string[], deps: CliRuntimeDeps) {
   let latestVersion: string
   try {
     latestVersion = await deps.fetchLatestVersion(PACKAGE_NAME)
-  }
-  catch (error) {
+  } catch (error) {
     deps.warn(`${LOG_PREFIX} update check failed, continuing current version`)
     if (error instanceof Error && error.message) {
       deps.warn(`${LOG_PREFIX} ${error.message}`)
@@ -236,20 +230,18 @@ async function maybeSelfUpdate(argv: string[], deps: CliRuntimeDeps) {
     return null
   }
 
-  deps.log(`${LOG_PREFIX} updating to ${latestVersion}`)
-  if (!deps.installVersion(PACKAGE_NAME, latestVersion)) {
+  deps.log(`${LOG_PREFIX} installing ${PACKAGE_NAME}@${latestVersion}`)
+  const installResult = deps.installVersion(PACKAGE_NAME, latestVersion)
+  if (!installResult.ok) {
     deps.warn(`${LOG_PREFIX} update failed, continuing current version`)
+    if (installResult.userMessage) {
+      deps.warn(`${LOG_PREFIX} ${installResult.userMessage}`)
+    }
     return null
   }
 
   deps.log(`${LOG_PREFIX} restarting into updated version`)
-  const exitCode = deps.relaunch(CLI_COMMAND, argv)
-  if (exitCode === null) {
-    deps.warn(`${LOG_PREFIX} restart failed, continuing current version`)
-    return null
-  }
-
-  return exitCode
+  return "startup_update" as const
 }
 
 export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliRunResult> {
@@ -268,41 +260,50 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
     return { kind: "exited", code: 1 }
   }
 
-  const repairExitCode = maybeRepairMissingClientBundle(argv, deps)
-  if (repairExitCode !== null) {
-    return { kind: "exited", code: repairExitCode }
+  const shouldRestart = await maybeSelfUpdate(argv, deps)
+  if (shouldRestart !== null) {
+    return { kind: "restarting", reason: shouldRestart }
   }
 
-  const relaunchExitCode = await maybeSelfUpdate(argv, deps)
-  if (relaunchExitCode !== null) {
-    return { kind: "exited", code: relaunchExitCode }
-  }
+  const { port, stop } = await deps.startServer({
+    ...parsedArgs.options,
+    onMigrationProgress: deps.log,
+    update: {
+      version: deps.version,
+      fetchLatestVersion: deps.fetchLatestVersion,
+      installVersion: deps.installVersion,
+      argv,
+      command: CLI_COMMAND,
+    },
+  })
 
-  const { port, stop } = await deps.startServer(parsedArgs.options)
   const bindHost = parsedArgs.options.host
-  const displayHost = bindHost === "127.0.0.1" || bindHost === "0.0.0.0" ? "localhost" : bindHost
-  const url = `http://${bindHost}:${port}`
+  const displayHost = isShareEnabled(parsedArgs.options.share) || bindHost === "127.0.0.1" || bindHost === "0.0.0.0"
+    ? "localhost"
+    : bindHost
   const launchUrl = `http://${displayHost}:${port}`
-  let shareTunnel: StartedShareTunnel | null = null
+  let shareTunnelStop: (() => void) | null = null
 
-  delete process.env.VISPARK_PUBLIC_APP_URL
-
-  deps.log(`${LOG_PREFIX} listening on ${url}`)
+  deps.log(`${LOG_PREFIX} listening on http://${bindHost}:${port}`)
   deps.log(`${LOG_PREFIX} data dir: ${getDataDirDisplay()}`)
 
-  if (parsedArgs.options.share) {
-    const localUrl = `http://localhost:${port}`
-
+  const suppressOpenBrowser = process.env[CLI_SUPPRESS_OPEN_ONCE_ENV_VAR] === "1"
+  if (isShareEnabled(parsedArgs.options.share)) {
     try {
-      const startShareTunnel = deps.startShareTunnel
-        ?? ((shareUrl: string) => startShareTunnelDefault(shareUrl, {
-          log: (message) => {
-            deps.log(`${LOG_PREFIX} ${message}`)
-          },
-        }))
-      shareTunnel = await startShareTunnel(localUrl)
-      process.env.VISPARK_PUBLIC_APP_URL = shareTunnel.publicUrl
-      await logShareDetails(deps.log, shareTunnel.publicUrl, localUrl, deps.renderShareQr ?? renderTerminalQr)
+      const shareTunnel = await (deps.startShareTunnel ?? ((localUrl, shareMode) => startShareTunnel(localUrl, shareMode, {
+        log: (message) => deps.log(`${LOG_PREFIX} ${message}`),
+      })))(launchUrl, parsedArgs.options.share)
+      shareTunnelStop = shareTunnel.stop
+      if (shareTunnel.publicUrl) {
+        await logShareDetails(deps.log, shareTunnel.publicUrl, launchUrl, deps.renderShareQr ?? renderTerminalQr)
+      } else {
+        deps.warn(`${LOG_PREFIX} named tunnel started but no public hostname was detected`)
+        if (isTokenShareMode(parsedArgs.options.share)) {
+          deps.warn(`${LOG_PREFIX} use the hostname configured for the provided Cloudflare tunnel token`)
+        }
+        deps.log("Local URL:")
+        deps.log(launchUrl)
+      }
     } catch (error) {
       await stop()
       deps.warn(`${LOG_PREFIX} failed to start Cloudflare share tunnel`)
@@ -313,16 +314,14 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
     }
   }
 
-  const suppressOpenBrowser = process.env[CLI_SUPPRESS_OPEN_ONCE_ENV_VAR] === "1"
-  if (parsedArgs.options.openBrowser && !parsedArgs.options.share && !suppressOpenBrowser) {
+  if (parsedArgs.options.openBrowser && !isShareEnabled(parsedArgs.options.share) && !suppressOpenBrowser) {
     deps.openUrl(launchUrl)
   }
 
   return {
     kind: "started",
     stop: async () => {
-      delete process.env.VISPARK_PUBLIC_APP_URL
-      shareTunnel?.stop()
+      shareTunnelStop?.()
       await stop()
     },
   }
@@ -331,44 +330,78 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
 export function openUrl(url: string) {
   const platform = process.platform
   if (platform === "darwin") {
-    spawnDetached("open", [url])
+    void spawnDetached("open", [url]).catch(() => {})
   } else if (platform === "win32") {
-    spawnDetached("cmd", ["/c", "start", "", url])
+    void spawnDetached("cmd", ["/c", "start", "", url]).catch(() => {})
   } else {
-    spawnDetached("xdg-open", [url])
+    void spawnDetached("xdg-open", [url]).catch(() => {})
   }
   console.log(`${LOG_PREFIX} opened in default browser`)
 }
 
-export async function fetchLatestPackageVersion(_packageName: string) {
-  const response = await fetch(`https://registry.npmjs.org/${PACKAGE_NAME}/latest`)
+export async function fetchLatestPackageVersion(packageName: string) {
+  const response = await fetch(`https://registry.npmjs.org/${encodeURIComponent(packageName)}/latest`)
   if (!response.ok) {
-    throw new Error(`npm registry fetch returned ${response.status}`)
+    throw new Error(`registry returned ${response.status}`)
   }
 
   const payload = await response.json() as { version?: unknown }
   if (typeof payload.version !== "string" || !payload.version.trim()) {
-    throw new Error("npm registry response did not include a version")
+    throw new Error("registry response did not include a version")
   }
 
   return payload.version
 }
 
+export function classifyInstallVersionFailure(output: string): UpdateInstallAttemptResult {
+  const normalizedOutput = output.trim()
+  if (/No version matching .* found|failed to resolve/i.test(normalizedOutput)) {
+    return {
+      ok: false,
+      errorCode: "version_not_live_yet",
+      userTitle: "Update not live yet",
+      userMessage: "This update is still propagating. Try again in a few minutes.",
+    }
+  }
+
+  return {
+    ok: false,
+    errorCode: "install_failed",
+    userTitle: "Update failed",
+    userMessage: "Vispark Code could not install the update. Try again later.",
+  }
+}
+
 export function getInstallTarget(packageName: string, version: string) {
-  const normalizedVersion = version.trim()
-  return `${packageName}@${normalizedVersion || "latest"}`
+  return `${packageName}@${version.trim() || "latest"}`
 }
 
 export function installPackageVersion(packageName: string, version: string) {
-  if (!hasCommand("bun")) return false
-  // Use an explicit package name and version so global self-updates track the
-  // published npm artifact that includes the built client bundle.
-  const result = spawnSync("bun", ["install", "-g", "--force", getInstallTarget(packageName, version)], { stdio: "inherit" })
-  return result.status === 0
-}
+  if (!hasCommand("bun")) {
+    return {
+      ok: false,
+      errorCode: "command_missing",
+      userTitle: "Bun not found",
+      userMessage: "Vispark Code could not find Bun to install the update.",
+    } satisfies UpdateInstallAttemptResult
+  }
 
-export function relaunchCli(command: string, args: string[]) {
-  const result = spawnSync(command, args, { stdio: "inherit" })
-  if (result.error) return null
-  return result.status ?? 0
+  const result = spawnSync("bun", ["install", "-g", getInstallTarget(packageName, version)], {
+    stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf8",
+  })
+  const stdout = result.stdout ?? ""
+  const stderr = result.stderr ?? ""
+  if (stdout) process.stdout.write(stdout)
+  if (stderr) process.stderr.write(stderr)
+  if (result.status === 0) {
+    return {
+      ok: true,
+      errorCode: null,
+      userTitle: null,
+      userMessage: null,
+    } satisfies UpdateInstallAttemptResult
+  }
+
+  return classifyInstallVersionFailure(`${stdout}\n${stderr}`)
 }

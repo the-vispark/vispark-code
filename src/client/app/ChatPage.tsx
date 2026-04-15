@@ -25,6 +25,7 @@ import { RightSidebar } from "../components/chat-ui/RightSidebar"
 import { TerminalWorkspace } from "../components/chat-ui/TerminalWorkspace"
 import { DrainingIndicator } from "../components/messages/DrainingIndicator"
 import { ProcessingMessage } from "../components/messages/ProcessingMessage"
+import { QueuedUserMessage } from "../components/messages/QueuedUserMessage"
 import { OpenLocalLinkProvider } from "../components/messages/shared"
 import { AnimatedShinyText } from "../components/ui/animated-shiny-text"
 import { useAppDialog } from "../components/ui/app-dialog"
@@ -203,6 +204,7 @@ interface ChatTranscriptViewportProps {
   latestToolIds: VisparkCodeState["latestToolIds"]
   isHistoryLoading: boolean
   hasOlderHistory: boolean
+  queuedMessages: VisparkCodeState["queuedMessages"]
   isProcessing: boolean
   runtimeStatus: string | null
   isDraining: boolean
@@ -212,6 +214,8 @@ interface ChatTranscriptViewportProps {
   onOpenLocalLink: VisparkCodeState["handleOpenLocalLink"]
   onAskUserQuestionSubmit: VisparkCodeState["handleAskUserQuestion"]
   onExitPlanModeConfirm: VisparkCodeState["handleExitPlanMode"]
+  onSteerQueuedMessage: VisparkCodeState["handleSteerQueuedMessage"]
+  onRemoveQueuedMessage: VisparkCodeState["handleRemoveQueuedMessage"]
   showScrollButton: boolean
   onScrollChange: () => void
   scrollToBottom: () => void
@@ -229,6 +233,7 @@ const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
   latestToolIds,
   isHistoryLoading,
   hasOlderHistory,
+  queuedMessages,
   isProcessing,
   runtimeStatus,
   isDraining,
@@ -238,6 +243,8 @@ const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
   onOpenLocalLink,
   onAskUserQuestionSubmit,
   onExitPlanModeConfirm,
+  onSteerQueuedMessage,
+  onRemoveQueuedMessage,
   showScrollButton,
   onScrollChange,
   scrollToBottom,
@@ -407,7 +414,7 @@ const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
                           <div className="pb-5">
                             <VisparkCodeTranscriptRow
                               row={row}
-                              toolGroupExpanded={toolGroupExpanded}
+                              toolGroupExpanded={row.kind === "tool-group" ? (toolGroupExpanded[row.id] ?? false) : undefined}
                               onToolGroupExpandedChange={handleToolGroupExpandedChange}
                               onAskUserQuestionSubmit={onAskUserQuestionSubmit}
                               onExitPlanModeConfirm={onExitPlanModeConfirm}
@@ -422,7 +429,7 @@ const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
                   <div key={`tail-row:${row.id}`} className="pb-5">
                     <VisparkCodeTranscriptRow
                       row={row}
-                      toolGroupExpanded={toolGroupExpanded}
+                      toolGroupExpanded={row.kind === "tool-group" ? (toolGroupExpanded[row.id] ?? false) : undefined}
                       onToolGroupExpandedChange={handleToolGroupExpandedChange}
                       onAskUserQuestionSubmit={onAskUserQuestionSubmit}
                       onExitPlanModeConfirm={onExitPlanModeConfirm}
@@ -434,6 +441,18 @@ const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
           ) : (
             <div style={{ height: transcriptPaddingBottom }} aria-hidden="true" />
           )}
+          {queuedMessages.map((message) => (
+            <QueuedUserMessage
+              key={message.id}
+              message={message}
+              onRemove={() => {
+                void onRemoveQueuedMessage(message.id)
+              }}
+              onSendNow={() => {
+                void onSteerQueuedMessage(message.id)
+              }}
+            />
+          ))}
           {isProcessing ? <ProcessingMessage status={runtimeStatus ?? undefined} /> : null}
           {!isProcessing && isDraining ? (
             <DrainingIndicator onStop={() => void onStopDraining()} />
@@ -1616,6 +1635,7 @@ export function ChatPage() {
           latestToolIds={state.latestToolIds}
           isHistoryLoading={state.isHistoryLoading}
           hasOlderHistory={state.hasOlderHistory}
+          queuedMessages={state.queuedMessages}
           isProcessing={state.isProcessing}
           runtimeStatus={state.runtime?.status ?? null}
           isDraining={state.isDraining}
@@ -1625,6 +1645,8 @@ export function ChatPage() {
           onOpenLocalLink={state.handleOpenLocalLink}
           onAskUserQuestionSubmit={state.handleAskUserQuestion}
           onExitPlanModeConfirm={state.handleExitPlanMode}
+          onSteerQueuedMessage={state.handleSteerQueuedMessage}
+          onRemoveQueuedMessage={state.handleRemoveQueuedMessage}
           showScrollButton={state.showScrollButton}
           onScrollChange={state.updateScrollState}
           scrollToBottom={state.scrollToBottom}
@@ -1677,7 +1699,10 @@ export function ChatPage() {
         activeProvider={state.runtime?.provider ?? null}
         availableProviders={state.availableProviders}
         contextWindowSnapshot={contextWindowSnapshot}
-        onSubmit={state.handleSend}
+        onSubmit={async (content, options) => {
+          state.scrollToBottom()
+          await state.handleSend(content, options)
+        }}
         onCancel={handleCancel}
       />
     </Card>

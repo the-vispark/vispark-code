@@ -2,8 +2,10 @@ import type {
   AgentProvider,
   ChatAttachment,
   ContextWindowUsageSnapshot,
+  ModelOptions,
   NormalizedToolCall,
   PendingToolSnapshot,
+  QueuedChatMessage,
   TranscriptEntry,
   VisparkCodeStatus,
 } from "../shared/types"
@@ -39,6 +41,9 @@ const VISION_TOOLSET = [
 ] as const
 
 const CONTINUAL_LEARNING_MARKER = "<vispark-code-continual-learning enabled=\"true\" />"
+const STEERED_MESSAGE_PREFIX = `<system-message>
+The user would like to inform you of something while you continue to work. Acknowledge receipt immediately with a text response, then continue with the task at hand, incorporating the user's feedback if needed.
+</system-message>`
 
 interface PendingToolRequest {
   toolUseId: string
@@ -72,6 +77,13 @@ interface SendToStartingProfile {
   startedAt: number
 }
 
+interface SendMessageOptions {
+  provider?: AgentProvider
+  model?: string
+  modelOptions?: ModelOptions
+  planMode?: boolean
+}
+
 interface DeferredHarnessTurn {
   proxy: HarnessTurn
   attach: (turn: HarnessTurn) => void
@@ -96,6 +108,12 @@ function stringFromUnknown(value: unknown) {
   } catch {
     return String(value)
   }
+}
+
+function buildSteeredMessageContent(content: string) {
+  return content.trim().length > 0
+    ? `${STEERED_MESSAGE_PREFIX}\n\n${content}`
+    : STEERED_MESSAGE_PREFIX
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -683,20 +701,58 @@ export class AgentCoordinator {
     this.onStateChange()
   }
 
-  private resolveProvider() {
-    return "vision" as const
+  private resolveProvider(options: SendMessageOptions, currentProvider: AgentProvider | null = null) {
+    return currentProvider ?? options.provider ?? "vision"
   }
 
-  private getProviderSettings(command: Extract<ClientCommand, { type: "chat.send" }>) {
-    const provider = this.resolveProvider()
+  private getProviderSettings(provider: AgentProvider, options: SendMessageOptions) {
     const catalog = getServerProviderCatalog(provider)
-    const visionModelOptions = normalizeVisionModelOptions(command.modelOptions)
+    const visionModelOptions = normalizeVisionModelOptions(options.modelOptions)
     return {
       provider,
-      model: normalizeServerModel(provider, command.model),
-      planMode: catalog.supportsPlanMode ? Boolean(command.planMode) : false,
+      model: normalizeServerModel(provider, options.model),
+      planMode: catalog.supportsPlanMode ? Boolean(options.planMode) : false,
       continualLearning: visionModelOptions.continualLearning,
     }
+  }
+
+  private async enqueueMessage(chatId: string, content: string, attachments: ChatAttachment[], options?: SendMessageOptions) {
+    const queued = await this.store.enqueueMessage(chatId, {
+      content,
+      attachments,
+      provider: options?.provider,
+      model: options?.model,
+      modelOptions: options?.modelOptions,
+      planMode: options?.planMode,
+    })
+    this.onStateChange()
+    return queued
+  }
+
+  private async dequeueAndStartQueuedMessage(chatId: string, queuedMessage: QueuedChatMessage, options?: { steered?: boolean }) {
+    await this.store.removeQueuedMessage(chatId, queuedMessage.id)
+    const chat = this.store.requireChat(chatId)
+    const provider = this.resolveProvider(queuedMessage, chat.provider)
+    const settings = this.getProviderSettings(provider, queuedMessage)
+    await this.startTurnForChat({
+      chatId,
+      provider: settings.provider,
+      content: options?.steered ? buildSteeredMessageContent(queuedMessage.content) : queuedMessage.content,
+      attachments: queuedMessage.attachments,
+      model: settings.model,
+      planMode: settings.planMode,
+      continualLearning: settings.continualLearning,
+      appendUserPrompt: true,
+      steered: options?.steered,
+    })
+  }
+
+  private async maybeStartNextQueuedMessage(chatId: string) {
+    if (this.activeTurns.has(chatId)) return false
+    const nextQueuedMessage = this.store.getQueuedMessages(chatId)[0]
+    if (!nextQueuedMessage) return false
+    await this.dequeueAndStartQueuedMessage(chatId, nextQueuedMessage)
+    return true
   }
 
   private async startTurnForChat(args: {
@@ -708,6 +764,7 @@ export class AgentCoordinator {
     planMode: boolean
     continualLearning: boolean
     appendUserPrompt: boolean
+    steered?: boolean
     profile?: SendToStartingProfile | null
   }) {
     logSendToStartingProfile(args.profile, "start_turn.begin", {
@@ -761,7 +818,7 @@ export class AgentCoordinator {
 
     if (args.appendUserPrompt) {
       const userPromptEntry = timestamped(
-        { kind: "user_prompt", content: args.content, attachments: args.attachments },
+        { kind: "user_prompt", content: args.content, attachments: args.attachments, steered: args.steered },
         Date.now()
       )
       await this.store.appendMessage(args.chatId, userPromptEntry)
@@ -887,7 +944,19 @@ export class AgentCoordinator {
       })
     }
 
-    const settings = this.getProviderSettings(command)
+    const chat = this.store.requireChat(chatId)
+    if (this.activeTurns.has(chatId)) {
+      const queuedMessage = await this.enqueueMessage(chatId, command.content, command.attachments ?? [], {
+        provider: command.provider,
+        model: command.model,
+        modelOptions: command.modelOptions,
+        planMode: command.planMode,
+      })
+      return { chatId, queuedMessageId: queuedMessage.id, queued: true as const }
+    }
+
+    const provider = this.resolveProvider(command, chat.provider)
+    const settings = this.getProviderSettings(provider, command)
     await this.startTurnForChat({
       chatId,
       provider: settings.provider,
@@ -907,6 +976,43 @@ export class AgentCoordinator {
     })
 
     return { chatId }
+  }
+
+  async enqueue(command: Extract<ClientCommand, { type: "message.enqueue" }>) {
+    const queuedMessage = await this.enqueueMessage(command.chatId, command.content, command.attachments ?? [], {
+      provider: command.provider,
+      model: command.model,
+      modelOptions: command.modelOptions,
+      planMode: command.planMode,
+    })
+    return { queuedMessageId: queuedMessage.id }
+  }
+
+  async steer(command: Extract<ClientCommand, { type: "message.steer" }>) {
+    const queuedMessage = this.store.getQueuedMessage(command.chatId, command.queuedMessageId)
+    if (!queuedMessage) {
+      throw new Error("Queued message not found")
+    }
+
+    if (this.activeTurns.has(command.chatId)) {
+      await this.cancel(command.chatId, { hideInterrupted: true })
+    }
+
+    if (this.activeTurns.has(command.chatId)) {
+      throw new Error("Chat is still running")
+    }
+
+    await this.dequeueAndStartQueuedMessage(command.chatId, queuedMessage, { steered: true })
+  }
+
+  async dequeue(command: Extract<ClientCommand, { type: "message.dequeue" }>) {
+    const queuedMessage = this.store.getQueuedMessage(command.chatId, command.queuedMessageId)
+    if (!queuedMessage) {
+      throw new Error("Queued message not found")
+    }
+
+    await this.store.removeQueuedMessage(command.chatId, command.queuedMessageId)
+    this.onStateChange()
   }
 
   private async generateTitleInBackground(chatId: string, messageContent: string, cwd: string, expectedCurrentTitle: string) {
@@ -994,10 +1100,34 @@ export class AgentCoordinator {
       }
       this.drainingStreams.delete(active.chatId)
       this.onStateChange()
+      if (!active.cancelRequested) {
+        try {
+          await this.maybeStartNextQueuedMessage(active.chatId)
+        } catch (error) {
+          if (!this.store.getChat(active.chatId)) return
+          const message = formatErrorMessage(error)
+          try {
+            await this.store.appendMessage(
+              active.chatId,
+              timestamped({
+                kind: "result",
+                subtype: "error",
+                isError: true,
+                durationMs: 0,
+                result: message,
+              })
+            )
+            await this.store.recordTurnFailed(active.chatId, message)
+            this.onStateChange()
+          } catch {
+            // Ignore failures while saving the queue error.
+          }
+        }
+      }
     }
   }
 
-  async cancel(chatId: string) {
+  async cancel(chatId: string, options?: { hideInterrupted?: boolean }) {
     const draining = this.drainingStreams.get(chatId)
     if (draining) {
       draining.turn.close()
@@ -1033,7 +1163,7 @@ export class AgentCoordinator {
 
     if (this.store.getChat(chatId)) {
       try {
-        await this.store.appendMessage(chatId, timestamped({ kind: "interrupted" }))
+        await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
         await this.store.recordTurnCancelled(chatId)
       } catch {
         // Ignore if chat is concurrently deleted.

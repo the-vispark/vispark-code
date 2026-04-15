@@ -36,6 +36,7 @@ const DEFAULT_UPDATE_SNAPSHOT: UpdateSnapshot = {
   lastCheckedAt: null,
   error: null,
   installAction: "restart",
+  reloadRequestedAt: null,
 }
 
 describe("ws-router", () => {
@@ -779,6 +780,7 @@ describe("ws-router", () => {
         lastCheckedAt: 123,
         error: null,
         installAction: "restart",
+        reloadRequestedAt: null,
       },
     })
 

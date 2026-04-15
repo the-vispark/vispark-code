@@ -3,6 +3,8 @@ import type { ChatAttachment } from "../shared/types"
 import { APP_NAME, LOG_PREFIX } from "../shared/branding"
 import { DEV_CLIENT_PORT } from "../shared/ports"
 import { AppSettingsStore } from "./app-settings"
+import { createAuthManager } from "./auth"
+import type { UpdateInstallAttemptResult } from "./cli-runtime"
 import { EventStore } from "./event-store"
 import { AgentCoordinator } from "./agent"
 import { generateTitleForChatDetailed } from "./generate-title"
@@ -12,6 +14,7 @@ import { FileTreeManager } from "./file-tree-manager"
 import { KeybindingsManager } from "./keybindings"
 import { getMachineDisplayName } from "./machine-name"
 import { TerminalManager } from "./terminal-manager"
+import { UpdateManager } from "./update-manager"
 import { ensureVendoredHarness } from "./vendor-harness"
 import { VisionProxyServer } from "./vision-proxy"
 import { createWsRouter, type ClientState } from "./ws-router"
@@ -84,13 +87,21 @@ function extractStoredUploadName(pathname: string, prefix: string, suffix = "") 
 export interface StartVisparkCodeServerOptions {
   port?: number
   host?: string
+  password?: string | null
   strictPort?: boolean
+  onMigrationProgress?: (message: string) => void
+  update?: {
+    version: string
+    fetchLatestVersion: (packageName: string) => Promise<string>
+    installVersion: (packageName: string, version: string) => UpdateInstallAttemptResult
+  }
 }
 
 export async function startVisparkCodeServer(options: StartVisparkCodeServerOptions = {}) {
   const port = options.port ?? 3210
   const hostname = options.host ?? "127.0.0.1"
   const strictPort = options.strictPort ?? false
+  const auth = options.password ? createAuthManager(options.password) : null
   const devClientPort = Number.parseInt(process.env.VISPARK_DEV_CLIENT_PORT ?? "", 10)
   const devClientOrigin = Number.isFinite(devClientPort) ? `http://localhost:${devClientPort || DEV_CLIENT_PORT}` : null
   ensureVendoredHarness()
@@ -99,6 +110,7 @@ export async function startVisparkCodeServer(options: StartVisparkCodeServerOpti
   const store = new EventStore()
   const machineDisplayName = getMachineDisplayName()
   await store.initialize()
+  await store.migrateLegacyTranscripts?.(options.onMigrationProgress)
   settings.initialize()
   let discoveredProjects: DiscoveredProject[] = []
   const visionProxy = new VisionProxyServer(settings)
@@ -133,6 +145,14 @@ export async function startVisparkCodeServer(options: StartVisparkCodeServerOpti
   const terminals = new TerminalManager()
   const keybindings = new KeybindingsManager()
   await keybindings.initialize()
+  const updateManager = options.update
+    ? new UpdateManager({
+      currentVersion: options.update.version,
+      fetchLatestVersion: options.update.fetchLatestVersion,
+      installVersion: options.update.installVersion,
+      devMode: process.env.VISPARK_RUNTIME_PROFILE === "dev",
+    })
+    : null
   const fileTree = new FileTreeManager({
     getProject: (projectId) => store.getProject(projectId),
   })
@@ -156,6 +176,7 @@ export async function startVisparkCodeServer(options: StartVisparkCodeServerOpti
     refreshDiscovery,
     getDiscoveredProjects: () => discoveredProjects,
     machineDisplayName,
+    updateManager,
     clearCachedSourceData: clearSourceSyncData,
   })
 
@@ -171,6 +192,45 @@ export async function startVisparkCodeServer(options: StartVisparkCodeServerOpti
         hostname,
         fetch(req, serverInstance) {
           const url = new URL(req.url)
+
+          if (url.pathname === "/auth/status") {
+            return auth
+              ? auth.handleStatus(req)
+              : Response.json({ enabled: false, authenticated: true })
+          }
+
+          if (url.pathname === "/auth/logout") {
+            if (req.method !== "POST") {
+              return new Response(null, { status: 405, headers: { Allow: "POST" } })
+            }
+
+            return auth
+              ? auth.handleLogout(req)
+              : Response.json({ ok: true })
+          }
+
+          if (auth) {
+            if (url.pathname === "/auth/login") {
+              if (req.method === "GET") {
+                return auth.renderLoginPage(req)
+              }
+              if (req.method === "POST") {
+                return auth.handleLogin(req, "/")
+              }
+              return new Response(null, { status: 405, headers: { Allow: "GET, POST" } })
+            }
+
+            if (url.pathname === "/ws") {
+              if (!auth.validateOrigin(req)) {
+                return new Response("Forbidden", { status: 403 })
+              }
+              if (!auth.isAuthenticated(req)) {
+                return new Response("Unauthorized", { status: 401 })
+              }
+            } else if (!auth.isAuthenticated(req)) {
+              return auth.unauthorizedResponse(req)
+            }
+          }
 
           if (url.pathname === "/ws") {
             const upgraded = serverInstance.upgrade(req, {
@@ -352,6 +412,7 @@ export async function startVisparkCodeServer(options: StartVisparkCodeServerOpti
   return {
     port: actualPort,
     store,
+    updateManager,
     stop: shutdown,
   }
 }

@@ -55,6 +55,15 @@ describe("read models", () => {
       lastError: "Invalid API key",
       lastTurnOutcome: null,
     })
+    state.queuedMessagesByChatId.set("chat-1", [{
+      id: "queued-1",
+      content: "follow up",
+      attachments: [],
+      createdAt: 2,
+      provider: "vision",
+      model: "sonnet",
+      planMode: true,
+    }])
 
     const chat = deriveChatSnapshot(
       state,
@@ -74,6 +83,7 @@ describe("read models", () => {
     expect(chat?.runtime.provider).toBe("vision")
     expect(chat?.runtime.lastError).toBe("Invalid API key")
     expect(chat?.runtime.isDraining).toBe(true)
+    expect(chat?.queuedMessages.map((message) => message.content)).toEqual(["follow up"])
     expect(chat?.history.recentLimit).toBe(200)
     expect(chat?.availableProviders).toEqual([
       expect.objectContaining({
