@@ -125,6 +125,9 @@ export interface SidebarProjectGroup {
   groupKey: string
   localPath: string
   chats: SidebarChatRow[]
+  previewChats: SidebarChatRow[]
+  olderChats: SidebarChatRow[]
+  defaultCollapsed: boolean
 }
 
 export interface SidebarData {

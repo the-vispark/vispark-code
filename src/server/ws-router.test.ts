@@ -39,6 +39,30 @@ const DEFAULT_UPDATE_SNAPSHOT: UpdateSnapshot = {
   reloadRequestedAt: null,
 }
 
+function withSidebarGroupDefaults(group: {
+  groupKey: string
+  localPath: string
+  chats: Array<{
+    _id: string
+    _creationTime: number
+    chatId: string
+    title: string
+    status: "idle" | "starting" | "running" | "waiting_for_user" | "failed"
+    unread: boolean
+    localPath: string
+    provider: "vision" | null
+    lastMessageAt?: number
+    hasAutomation: boolean
+  }>
+}) {
+  return {
+    ...group,
+    previewChats: group.chats,
+    olderChats: [],
+    defaultCollapsed: true,
+  }
+}
+
 describe("ws-router", () => {
   test("acks system.ping without broadcasting snapshots", async () => {
     const router = createWsRouter({
@@ -361,7 +385,7 @@ describe("ws-router", () => {
       snapshot: {
         type: "sidebar",
         data: {
-          projectGroups: [{
+          projectGroups: [withSidebarGroupDefaults({
             groupKey: "project-1",
             localPath: "/tmp/project",
             chats: [{
@@ -373,10 +397,9 @@ describe("ws-router", () => {
               unread: false,
               localPath: "/tmp/project",
               provider: null,
-              lastMessageAt: undefined,
               hasAutomation: false,
             }],
-          }],
+          })],
         },
       },
     })
@@ -387,7 +410,7 @@ describe("ws-router", () => {
       snapshot: {
         type: "sidebar",
         data: {
-          projectGroups: [{
+          projectGroups: [withSidebarGroupDefaults({
             groupKey: "project-1",
             localPath: "/tmp/project",
             chats: [{
@@ -399,10 +422,9 @@ describe("ws-router", () => {
               unread: false,
               localPath: "/tmp/project",
               provider: null,
-              lastMessageAt: undefined,
               hasAutomation: false,
             }],
-          }],
+          })],
         },
       },
     })
@@ -476,11 +498,11 @@ describe("ws-router", () => {
       snapshot: {
         type: "sidebar",
         data: {
-          projectGroups: [{
+          projectGroups: [withSidebarGroupDefaults({
             groupKey: "project-1",
             localPath: "/tmp/project",
             chats: [],
-          }],
+          })],
         },
       },
     })

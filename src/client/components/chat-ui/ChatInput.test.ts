@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { getClipboardImageFiles, resolvePlanModeState, willExceedAttachmentLimit } from "./ChatInput"
+import { getClipboardImageFiles, resolvePlanModeState, trimTrailingPastedNewlines, willExceedAttachmentLimit } from "./ChatInput"
 import { useChatPreferencesStore } from "../../stores/chatPreferencesStore"
 
 const INITIAL_STATE = useChatPreferencesStore.getInitialState()
@@ -182,5 +182,23 @@ describe("getClipboardImageFiles", () => {
       "clipboard-789.png",
       "clipboard-789-1.webp",
     ])
+  })
+})
+
+describe("trimTrailingPastedNewlines", () => {
+  test("removes trailing unix newlines from pasted text", () => {
+    expect(trimTrailingPastedNewlines("hello\n\n")).toBe("hello")
+  })
+
+  test("removes trailing windows newlines from pasted text", () => {
+    expect(trimTrailingPastedNewlines("hello\r\n\r\n")).toBe("hello")
+  })
+
+  test("preserves internal newlines", () => {
+    expect(trimTrailingPastedNewlines("hello\nworld\n")).toBe("hello\nworld")
+  })
+
+  test("leaves text without trailing newlines unchanged", () => {
+    expect(trimTrailingPastedNewlines("hello")).toBe("hello")
   })
 })

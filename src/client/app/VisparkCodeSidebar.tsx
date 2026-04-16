@@ -6,8 +6,6 @@ import type { SidebarChatRow, SidebarData, UpdateSnapshot } from "../../shared/t
 import { ChatRow } from "../components/chat-ui/sidebar/ChatRow"
 import { LocalProjectsSection } from "../components/chat-ui/sidebar/LocalProjectsSection"
 import { Button } from "../components/ui/button"
-import { shouldDefaultCollapseSidebarProject } from "../lib/sidebarChats"
-import { useProjectGroupOrderStore } from "../stores/projectGroupOrderStore"
 import { cn } from "../lib/utils"
 import type { SocketStatus } from "./socket"
 
@@ -32,6 +30,7 @@ interface VisparkCodeSidebarProps {
   onCopyPath: (localPath: string) => void
   onOpenExternalPath: (action: "open_finder" | "open_editor", localPath: string) => void
   onRemoveProject: (projectId: string) => void
+  onReorderProjectGroups: (projectIds: string[]) => void
   editorLabel: string
   updateSnapshot: UpdateSnapshot | null
   onInstallUpdate: () => void
@@ -54,6 +53,7 @@ export function VisparkCodeSidebar({
   onCopyPath,
   onOpenExternalPath,
   onRemoveProject,
+  onReorderProjectGroups,
   editorLabel,
   updateSnapshot,
   onInstallUpdate,
@@ -65,31 +65,6 @@ export function VisparkCodeSidebar({
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set())
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
   const [nowMs, setNowMs] = useState(() => Date.now())
-  const chatsPerProject = 10
-
-  const savedOrder = useProjectGroupOrderStore((store) => store.order)
-  const setGroupOrder = useProjectGroupOrderStore((store) => store.setOrder)
-
-  const orderedProjectGroups = useMemo(() => {
-    if (savedOrder.length === 0) return data.projectGroups
-
-    const groupMap = new Map(data.projectGroups.map((group) => [group.groupKey, group]))
-    const ordered = savedOrder
-      .filter((key) => groupMap.has(key))
-      .map((key) => groupMap.get(key)!)
-
-    const orderedKeys = new Set(savedOrder)
-    for (const group of data.projectGroups) {
-      if (!orderedKeys.has(group.groupKey)) ordered.push(group)
-    }
-
-    return ordered
-  }, [data.projectGroups, savedOrder])
-
-  const handleReorderGroups = useCallback(
-    (newOrder: string[]) => setGroupOrder(newOrder),
-    [setGroupOrder]
-  )
 
   const projectIdByPath = useMemo(
     () => new Map(data.projectGroups.map((group) => [group.localPath, group.groupKey])),
@@ -104,7 +79,7 @@ export function VisparkCodeSidebar({
   useEffect(() => {
     setCollapsedSections((previous) => {
       const next = new Set<string>()
-      const projectKeys = new Set(orderedProjectGroups.map((group) => group.groupKey))
+      const projectKeys = new Set(data.projectGroups.map((group) => group.groupKey))
       const initializedKeys = initializedCollapsedGroupKeysRef.current
 
       for (const key of previous) {
@@ -117,10 +92,10 @@ export function VisparkCodeSidebar({
         [...initializedKeys].filter((key) => projectKeys.has(key))
       )
 
-      for (const group of orderedProjectGroups) {
+      for (const group of data.projectGroups) {
         if (initializedCollapsedGroupKeysRef.current.has(group.groupKey)) continue
         initializedCollapsedGroupKeysRef.current.add(group.groupKey)
-        if (shouldDefaultCollapseSidebarProject(group.chats, nowMs)) {
+        if (group.defaultCollapsed) {
           next.add(group.groupKey)
         }
       }
@@ -131,7 +106,7 @@ export function VisparkCodeSidebar({
 
       return next
     })
-  }, [nowMs, orderedProjectGroups])
+  }, [data.projectGroups])
 
   const toggleSection = useCallback((key: string) => {
     setCollapsedSections((previous) => {
@@ -243,8 +218,19 @@ export function VisparkCodeSidebar({
           collapsed && "md:hidden"
         )}
       >
-        <div className="flex h-[64px] max-h-[64px] items-center justify-between border-b pl-3 pr-[7px] md:h-[55px] md:max-h-[55px]">
-          <div className="flex items-center gap-2.5">
+        <div className="grid h-[64px] max-h-[64px] grid-cols-[40px_minmax(0,1fr)_40px] items-center border-b px-[5px] md:flex md:h-[55px] md:max-h-[55px] md:justify-between md:px-[7px] md:pl-3">
+          <div className="md:hidden">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-10 rounded-lg hover:!border-border/0"
+              onClick={onClose}
+              title="Close sidebar"
+            >
+              <X className="h-5 w-5" />
+            </Button>
+          </div>
+          <div className="flex items-center justify-self-center gap-2.5 md:justify-self-auto">
             <button
               type="button"
               onClick={onCollapse}
@@ -260,12 +246,12 @@ export function VisparkCodeSidebar({
             </span>
           </div>
 
-          <div className="flex items-center">
+          <div className="flex items-center justify-self-end md:justify-self-auto">
             {showUpdateButton ? (
               <Button
                 variant="outline"
                 size="sm"
-                className="mr-1 !h-auto rounded-full border-logo/20 bg-logo/20 px-2 py-0.5 text-[11px] font-bold tracking-wider text-logo hover:border-logo/20 hover:bg-logo hover:text-foreground"
+                className="mr-1 hidden !h-auto rounded-full border-logo/20 bg-logo/20 px-2 py-0.5 text-[11px] font-bold tracking-wider text-logo hover:border-logo/20 hover:bg-logo hover:text-foreground md:inline-flex"
                 onClick={onInstallUpdate}
                 disabled={isUpdating}
                 title={updateSnapshot?.latestVersion ? `Update to ${updateSnapshot.latestVersion}` : "Update Vispark Code"}
@@ -286,14 +272,6 @@ export function VisparkCodeSidebar({
               title="New project"
             >
               <Plus className="size-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="md:hidden"
-              onClick={onClose}
-            >
-              <X className="h-5 w-5" />
             </Button>
           </div>
         </div>
@@ -332,16 +310,14 @@ export function VisparkCodeSidebar({
             ) : null}
 
             <LocalProjectsSection
-              projectGroups={orderedProjectGroups}
+              projectGroups={data.projectGroups}
               editorLabel={editorLabel}
-              onReorderGroups={handleReorderGroups}
+              onReorderGroups={onReorderProjectGroups}
               collapsedSections={collapsedSections}
               expandedGroups={expandedGroups}
               onToggleSection={toggleSection}
               onToggleExpandedGroup={toggleExpandedGroup}
               renderChatRow={renderChatRow}
-              chatsPerProject={chatsPerProject}
-              nowMs={nowMs}
               onNewLocalChat={(localPath) => {
                 const projectId = projectIdByPath.get(localPath)
                 if (projectId) {

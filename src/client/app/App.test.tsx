@@ -5,14 +5,23 @@ import {
   getNotificationTitleCount,
 } from "./App"
 import { isBrowserUnfocused, shouldPlayChatSound } from "../lib/chatSounds"
+import type { SidebarChatRow } from "../../shared/types"
+
+function createProjectGroup(chats: SidebarChatRow[]) {
+  return {
+    groupKey: "project-1",
+    localPath: "/tmp/project",
+    chats,
+    previewChats: chats,
+    olderChats: [],
+    defaultCollapsed: false,
+  }
+}
 
 describe("getNotificationTitleCount", () => {
   test("counts unread chats and waiting-for-user chats", () => {
     expect(getNotificationTitleCount({
-      projectGroups: [{
-        groupKey: "project-1",
-        localPath: "/tmp/project",
-        chats: [
+      projectGroups: [createProjectGroup([
           {
             _id: "chat-1",
             _creationTime: 1,
@@ -46,18 +55,14 @@ describe("getNotificationTitleCount", () => {
             provider: null,
             hasAutomation: false,
           },
-        ],
-      }],
+        ])],
     })).toBe(4)
   })
 })
 
 describe("chat sound helpers", () => {
   const previous = {
-    projectGroups: [{
-      groupKey: "project-1",
-      localPath: "/tmp/project",
-      chats: [{
+    projectGroups: [createProjectGroup([{
         _id: "chat-1",
         _creationTime: 1,
         chatId: "chat-1",
@@ -67,16 +72,12 @@ describe("chat sound helpers", () => {
         localPath: "/tmp/project",
         provider: null,
         hasAutomation: false,
-      }],
-    }],
+      }])],
   }
 
   test("extracts unread and waiting notification state", () => {
     const snapshot = getChatNotificationSnapshot({
-      projectGroups: [{
-        groupKey: "project-1",
-        localPath: "/tmp/project",
-        chats: [
+      projectGroups: [createProjectGroup([
           {
             _id: "chat-1",
             _creationTime: 1,
@@ -99,8 +100,7 @@ describe("chat sound helpers", () => {
             provider: null,
             hasAutomation: false,
           },
-        ],
-      }],
+        ])],
     })
 
     expect(snapshot.unreadCount).toBe(1)
@@ -113,10 +113,7 @@ describe("chat sound helpers", () => {
 
   test("plays per unread increment and new waiting chat", () => {
     expect(getChatSoundBurstCount(previous, {
-      projectGroups: [{
-        groupKey: "project-1",
-        localPath: "/tmp/project",
-        chats: [
+      projectGroups: [createProjectGroup([
           {
             _id: "chat-1",
             _creationTime: 1,
@@ -139,17 +136,13 @@ describe("chat sound helpers", () => {
             provider: null,
             hasAutomation: false,
           },
-        ],
-      }],
+        ])],
     })).toBe(3)
   })
 
   test("does not replay for an already-waiting chat", () => {
     const current = {
-      projectGroups: [{
-        groupKey: "project-1",
-        localPath: "/tmp/project",
-        chats: [{
+      projectGroups: [createProjectGroup([{
           _id: "chat-1",
           _creationTime: 1,
           chatId: "chat-1",
@@ -159,8 +152,7 @@ describe("chat sound helpers", () => {
           localPath: "/tmp/project",
           provider: null,
           hasAutomation: false,
-        }],
-      }],
+        }])],
     }
 
     expect(getChatSoundBurstCount(current, current)).toBe(0)

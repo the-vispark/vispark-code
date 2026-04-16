@@ -204,6 +204,9 @@ function VisparkCodeLayout() {
         onRemoveProject={(projectId) => {
           void state.handleRemoveProject(projectId)
         }}
+        onReorderProjectGroups={(projectIds) => {
+          void state.handleReorderProjectGroups(projectIds)
+        }}
         editorLabel={state.editorLabel}
         updateSnapshot={state.updateSnapshot}
         onInstallUpdate={() => {

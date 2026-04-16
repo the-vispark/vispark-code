@@ -59,6 +59,7 @@ export type ClientCommand =
   | { type: "project.open"; localPath: string }
   | { type: "project.create"; localPath: string; title: string }
   | { type: "project.remove"; projectId: string }
+  | { type: "sidebar.reorderProjectGroups"; projectIds: string[] }
   | { type: "system.ping" }
   | { type: "settings.get" }
   | { type: "settings.updateVision"; visionApiKey: string }
