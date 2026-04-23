@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test"
 import {
+  getAppAuthStateFromStatus,
   getChatNotificationSnapshot,
   getChatSoundBurstCount,
   getNotificationTitleCount,
+  shouldRetryAuthStatusRequest,
 } from "./App"
 import { isBrowserUnfocused, shouldPlayChatSound } from "../lib/chatSounds"
 import type { SidebarChatRow } from "../../shared/types"
@@ -57,6 +59,23 @@ describe("getNotificationTitleCount", () => {
           },
         ])],
     })).toBe(4)
+  })
+})
+
+describe("auth boot helpers", () => {
+  test("maps disabled or authenticated auth status to ready", () => {
+    expect(getAppAuthStateFromStatus({ enabled: false, authenticated: true })).toEqual({ status: "ready" })
+    expect(getAppAuthStateFromStatus({ enabled: true, authenticated: true })).toEqual({ status: "ready" })
+  })
+
+  test("maps enabled but unauthenticated auth status to locked", () => {
+    expect(getAppAuthStateFromStatus({ enabled: true, authenticated: false })).toEqual({ status: "locked", error: null })
+  })
+
+  test("retries auth status requests unless the endpoint returned ok", () => {
+    expect(shouldRetryAuthStatusRequest(null)).toBe(true)
+    expect(shouldRetryAuthStatusRequest(false)).toBe(true)
+    expect(shouldRetryAuthStatusRequest(true)).toBe(false)
   })
 })
 

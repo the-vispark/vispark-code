@@ -212,7 +212,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   ))
   const composerState = storedComposerState ?? getComposerState(composerChatId)
   const [value, setValue] = useState(() => (chatId ? getDraft(chatId) : ""))
-  const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const isStandalone = useIsStandalone()
   const [attachments, setAttachments] = useState<ComposerAttachment[]>(() => (
@@ -610,10 +609,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     }
   }
 
-  function handleMobileFilePicker() {
-    fileInputRef.current?.click()
-  }
-
   return (
     <div>
       <div className={cn("p-3 pt-0 md:pb-2", isStandalone && "px-5 pb-5")}>
@@ -659,32 +654,29 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
           ) : null}
 
           <div className="flex items-end max-w-[840px] mx-auto border dark:bg-card/40 backdrop-blur-lg border-border rounded-[29px] pr-1.5">
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              className="hidden"
-              onChange={(event) => {
-                const files = [...(event.target.files ?? [])]
-                if (files.length > 0) {
-                  enqueueFiles(files)
-                }
-                event.target.value = ""
-              }}
-            />
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              onPointerDown={(event) => {
-                event.preventDefault()
-                handleMobileFilePicker()
-              }}
-              disabled={disabled || missingVisionApiKey}
-              className="flex-shrink-0 ml-1 mb-1 md:mb-1.5 h-10 w-10 md:h-11 md:w-11 rounded-full text-muted-foreground hover:text-foreground"
+            <label
+              aria-label="Add attachment"
+              className={cn(
+                "relative inline-flex flex-shrink-0 items-center justify-center ml-1 mb-1 md:mb-1.5 h-10 w-10 md:h-11 md:w-11 rounded-full text-muted-foreground hover:text-foreground",
+                (disabled || missingVisionApiKey) && "pointer-events-none opacity-50"
+              )}
             >
               <Paperclip className="h-5 w-5 md:h-6 md:w-6" />
-            </Button>
+              <input
+                type="file"
+                multiple
+                disabled={disabled || missingVisionApiKey}
+                aria-label="Add attachment"
+                className="absolute inset-0 cursor-pointer opacity-0"
+                onChange={(event) => {
+                  const files = [...(event.target.files ?? [])]
+                  if (files.length > 0) {
+                    enqueueFiles(files)
+                  }
+                  event.target.value = ""
+                }}
+              />
+            </label>
             <Textarea
               ref={setTextareaRefs}
               placeholder={missingVisionApiKey ? "Add your Vispark API key to start chatting..." : "Build something..."}

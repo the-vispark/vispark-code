@@ -29,6 +29,20 @@ type AppAuthState =
   | { status: "ready" }
   | { status: "locked"; error: string | null }
 
+const AUTH_STATUS_RETRY_DELAY_MS = 500
+
+export function getAppAuthStateFromStatus(payload: Partial<AuthStatusResponse>): AppAuthState {
+  if (!payload.enabled || payload.authenticated) {
+    return { status: "ready" }
+  }
+
+  return { status: "locked", error: null }
+}
+
+export function shouldRetryAuthStatusRequest(responseOk: boolean | null) {
+  return responseOk !== true
+}
+
 function PasswordScreen({
   error,
   onSubmit,
@@ -62,7 +76,7 @@ function PasswordScreen({
             </CardTitle>
           </div>
           <CardDescription className="leading-6">
-            Enter your password to continue. Your session stays unlocked until this Vispark Code process restarts.
+            Enter your password to continue.
           </CardDescription>
         </CardHeader>
         <CardContent className="px-6 pb-6">
@@ -94,8 +108,14 @@ function PasswordScreen({
 
 function useAppAuthState() {
   const [state, setState] = useState<AppAuthState>({ status: "checking" })
+  const retryTimeoutRef = useRef<number | null>(null)
 
   const refresh = useCallback(async () => {
+    if (retryTimeoutRef.current !== null) {
+      window.clearTimeout(retryTimeoutRef.current)
+      retryTimeoutRef.current = null
+    }
+
     setState((current) => current.status === "ready" ? current : { status: "checking" })
 
     let response: Response
@@ -108,26 +128,30 @@ function useAppAuthState() {
         },
       })
     } catch {
-      setState({ status: "ready" })
+      retryTimeoutRef.current = window.setTimeout(() => {
+        void refresh()
+      }, AUTH_STATUS_RETRY_DELAY_MS)
       return
     }
 
-    if (!response.ok) {
-      setState({ status: "ready" })
+    if (shouldRetryAuthStatusRequest(response.ok)) {
+      retryTimeoutRef.current = window.setTimeout(() => {
+        void refresh()
+      }, AUTH_STATUS_RETRY_DELAY_MS)
       return
     }
 
     const payload = await response.json() as Partial<AuthStatusResponse>
-    if (!payload.enabled || payload.authenticated) {
-      setState({ status: "ready" })
-      return
-    }
-
-    setState({ status: "locked", error: null })
+    setState(getAppAuthStateFromStatus(payload))
   }, [])
 
   useEffect(() => {
     void refresh()
+    return () => {
+      if (retryTimeoutRef.current !== null) {
+        window.clearTimeout(retryTimeoutRef.current)
+      }
+    }
   }, [refresh])
 
   const submitPassword = useCallback(async (password: string) => {
@@ -191,6 +215,9 @@ function VisparkCodeLayout() {
         onExpand={state.expandSidebar}
         onCreateChat={(projectId) => {
           void state.handleCreateChat(projectId)
+        }}
+        onForkChat={(chat) => {
+          void state.handleForkChat(chat)
         }}
         onDeleteChat={(chat) => {
           void state.handleDeleteChat(chat)

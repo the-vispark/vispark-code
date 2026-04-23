@@ -352,6 +352,36 @@ function getProjectIdForChat(projectGroups: SidebarData["projectGroups"], chatId
   return projectGroups.find((group) => group.chats.some((chat) => chat.chatId === chatId))?.groupKey ?? null
 }
 
+export function applySidebarProjectOrder(
+  projectGroups: SidebarData["projectGroups"],
+  projectIds: string[]
+) {
+  if (projectIds.length === 0) {
+    return projectGroups
+  }
+
+  const groupById = new Map(projectGroups.map((group) => [group.groupKey, group]))
+  const ordered = projectIds
+    .map((projectId) => groupById.get(projectId))
+    .filter((group): group is SidebarData["projectGroups"][number] => Boolean(group))
+  const orderedIds = new Set(ordered.map((group) => group.groupKey))
+  const trailing = projectGroups.filter((group) => !orderedIds.has(group.groupKey))
+  const next = [...ordered, ...trailing]
+
+  return next.length === projectGroups.length
+    && next.every((group, index) => group === projectGroups[index])
+    ? projectGroups
+    : next
+}
+
+function isSidebarProjectOrderApplied(
+  projectGroups: SidebarData["projectGroups"],
+  projectIds: string[]
+) {
+  const normalized = applySidebarProjectOrder(projectGroups, projectIds)
+  return normalized.every((group, index) => group.groupKey === projectGroups[index]?.groupKey)
+}
+
 export function shouldAutoFollowTranscript(distanceFromBottom: number) {
   return distanceFromBottom < 24
 }
@@ -399,6 +429,10 @@ export function shouldHandleUiUpdateReloadRequest(
   return String(reloadRequestedAt) !== lastHandledReloadRequest
 }
 
+export function getUiUpdateReadinessPath() {
+  return "/auth/status"
+}
+
 function getLastHandledUiUpdateReloadRequest() {
   return window.sessionStorage.getItem(UI_UPDATE_RELOAD_REQUEST_STORAGE_KEY)
 }
@@ -408,7 +442,7 @@ function setLastHandledUiUpdateReloadRequest(reloadRequestedAt: number) {
 }
 
 async function isServerReady() {
-  const response = await fetch("/health", {
+  const response = await fetch(getUiUpdateReadinessPath(), {
     method: "GET",
     cache: "no-store",
     headers: {
@@ -518,6 +552,7 @@ export interface VisparkCodeState {
   handleCancel: () => Promise<void>
   handleStopDraining: () => Promise<void>
   handleDeleteChat: (chat: SidebarChatRow) => Promise<void>
+  handleForkChat: (chat: SidebarChatRow) => Promise<void>
   handleRemoveProject: (projectId: string) => Promise<void>
   handleReorderProjectGroups: (projectIds: string[]) => Promise<void>
   handleCopyPath: (localPath: string) => Promise<void>
@@ -565,6 +600,7 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
   const [inputHeight, setInputHeight] = useState(148)
   const [isAtBottom, setIsAtBottom] = useState(true)
   const [commandError, setCommandError] = useState<string | null>(null)
+  const [optimisticSidebarProjectOrder, setOptimisticSidebarProjectOrder] = useState<string[]>([])
   const [startingLocalPath, setStartingLocalPath] = useState<string | null>(null)
   const [pendingChatId, setPendingChatId] = useState<string | null>(null)
   const [optimisticUserPrompts, setOptimisticUserPrompts] = useState<OptimisticUserPrompt[]>([])
@@ -592,11 +628,17 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
 
   useEffect(() => {
     return socket.subscribe<SidebarData>({ type: "sidebar" }, (snapshot) => {
-      setSidebarData(snapshot)
+      if (optimisticSidebarProjectOrder.length > 0 && isSidebarProjectOrderApplied(snapshot.projectGroups, optimisticSidebarProjectOrder)) {
+        setOptimisticSidebarProjectOrder([])
+      }
+      setSidebarData({
+        ...snapshot,
+        projectGroups: applySidebarProjectOrder(snapshot.projectGroups, optimisticSidebarProjectOrder),
+      })
       setSidebarReady(true)
       setCommandError(null)
     })
-  }, [socket])
+  }, [optimisticSidebarProjectOrder, socket])
 
   useEffect(() => {
     if (connectionStatus !== "connected") return
@@ -1498,6 +1540,16 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     }
   }, [activeChatId, dialog, navigate, sidebarData.projectGroups, socket])
 
+  const handleForkChat = useCallback(async (chat: SidebarChatRow) => {
+    try {
+      const result = await socket.command<{ chatId: string }>({ type: "chat.fork", chatId: chat.chatId })
+      navigate(`/chat/${result.chatId}`)
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }, [navigate, socket])
+
   const handleRemoveProject = useCallback(async (projectId: string) => {
     const project = sidebarData.projectGroups.find((group) => group.groupKey === projectId)
     if (!project) return
@@ -1524,10 +1576,16 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
   }, [dialog, navigate, runtime?.projectId, sidebarData.projectGroups, socket])
 
   const handleReorderProjectGroups = useCallback(async (projectIds: string[]) => {
+    setOptimisticSidebarProjectOrder(projectIds)
+    setSidebarData((current) => ({
+      ...current,
+      projectGroups: applySidebarProjectOrder(current.projectGroups, projectIds),
+    }))
     try {
       await socket.command({ type: "sidebar.reorderProjectGroups", projectIds })
       setCommandError(null)
     } catch (error) {
+      setOptimisticSidebarProjectOrder([])
       setCommandError(error instanceof Error ? error.message : String(error))
     }
   }, [socket])
@@ -1716,6 +1774,7 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     handleCancel,
     handleStopDraining,
     handleDeleteChat,
+    handleForkChat,
     handleRemoveProject,
     handleReorderProjectGroups,
     handleCopyPath,

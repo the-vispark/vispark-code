@@ -523,6 +523,7 @@ async function startVisionTurn(args: {
   planMode: boolean
   continualLearning: boolean
   sessionToken: string | null
+  forkSession: boolean
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
 }): Promise<HarnessTurn> {
   const canUseTool: CanUseTool = async (toolName, input, options) => {
@@ -586,6 +587,7 @@ async function startVisionTurn(args: {
       cwd: args.localPath,
       model: args.model,
       resume: args.sessionToken ?? undefined,
+      forkSession: args.forkSession,
       permissionMode: args.planMode ? "plan" : "acceptEdits",
       systemPrompt: args.continualLearning
         ? {
@@ -699,6 +701,25 @@ export class AgentCoordinator {
   async closeChat(chatId: string) {
     await this.stopDraining(chatId)
     this.onStateChange()
+  }
+
+  async forkChat(chatId: string) {
+    if (this.activeTurns.has(chatId) || this.drainingStreams.has(chatId)) {
+      throw new Error("Chat must be idle before forking")
+    }
+
+    const chat = this.store.requireChat(chatId)
+    if (!chat.provider) {
+      throw new Error("Chat must have a provider before forking")
+    }
+
+    if (!chat.sessionToken && !chat.pendingForkSessionToken) {
+      throw new Error("Chat has no session to fork")
+    }
+
+    const forked = await this.store.forkChat(chatId)
+    this.onStateChange()
+    return { chatId: forked.id }
   }
 
   private resolveProvider(options: SendMessageOptions, currentProvider: AgentProvider | null = null) {
@@ -816,6 +837,9 @@ export class AgentCoordinator {
       throw new Error("Project not found")
     }
 
+    const sessionToken = chat.pendingForkSessionToken ?? chat.sessionToken
+    const forkSession = Boolean(chat.pendingForkSessionToken)
+
     if (args.appendUserPrompt) {
       const userPromptEntry = timestamped(
         { kind: "user_prompt", content: args.content, attachments: args.attachments, steered: args.steered },
@@ -895,7 +919,8 @@ export class AgentCoordinator {
           model: args.model,
           planMode: args.planMode,
           continualLearning: args.continualLearning,
-          sessionToken: chat.sessionToken,
+          sessionToken,
+          forkSession,
           onToolRequest,
         })
         deferredTurn.attach(turn)
@@ -1043,6 +1068,10 @@ export class AgentCoordinator {
 
         if (event.type === "session_token" && event.sessionToken) {
           await this.store.setSessionToken(active.chatId, event.sessionToken)
+          const chat = this.store.getChat(active.chatId)
+          if (chat?.pendingForkSessionToken && chat.pendingForkSessionToken !== event.sessionToken) {
+            await this.store.setPendingForkSessionToken(active.chatId, null)
+          }
           this.onStateChange()
           continue
         }

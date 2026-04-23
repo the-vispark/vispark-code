@@ -15,6 +15,7 @@ export interface ChatRecord {
   provider: AgentProvider | null
   planMode: boolean
   sessionToken: string | null
+  pendingForkSessionToken?: string | null
   lastError: string | null
   lastMessageAt?: number
   lastTurnOutcome: "success" | "failed" | "cancelled" | null
@@ -154,6 +155,13 @@ export type TurnEvent =
   | {
       v: 2
       type: "session_token_set"
+      timestamp: number
+      chatId: string
+      sessionToken: string | null
+    }
+  | {
+      v: 2
+      type: "pending_fork_session_token_set"
       timestamp: number
       chatId: string
       sessionToken: string | null

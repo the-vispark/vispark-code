@@ -18,7 +18,7 @@ function createChat(chatId: string, lastMessageAt?: number): SidebarChatRow {
     status: "idle",
     unread: false,
     localPath: "/tmp/project",
-    provider: "codex",
+    provider: "vision",
     lastMessageAt,
     hasAutomation: false,
   }

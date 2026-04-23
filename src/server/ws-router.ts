@@ -184,13 +184,17 @@ export function createWsRouter({
 
   function getProtectedChatIds() {
     const activeStatuses = agent.getActiveStatuses()
-    const drainingChatIds = typeof agent.getDrainingChatIds === "function"
-      ? agent.getDrainingChatIds()
-      : new Set<string>()
+    const drainingChatIds = getDrainingChatIds()
     return new Set([
       ...activeStatuses.keys(),
       ...drainingChatIds.values(),
     ])
+  }
+
+  function getDrainingChatIds() {
+    return typeof agent.getDrainingChatIds === "function"
+      ? agent.getDrainingChatIds()
+      : new Set<string>()
   }
 
   function getProtectedDraftChatIds(extraSockets?: Iterable<ServerWebSocket<ClientState>>) {
@@ -262,7 +266,7 @@ export function createWsRouter({
   function createEnvelope(id: string, topic: SubscriptionTopic): ServerEnvelope {
     if (topic.type === "sidebar") {
       const startedAt = performance.now()
-      const data = deriveSidebarData(store.state, agent.getActiveStatuses())
+      const data = deriveSidebarData(store.state, agent.getActiveStatuses(), getDrainingChatIds())
       if (isSendToStartingProfilingEnabled()) {
         const totalChats = data.projectGroups.reduce((count, group) => count + group.chats.length, 0)
         console.log("[vispark-code/send->starting][server]", JSON.stringify({
@@ -378,7 +382,7 @@ export function createWsRouter({
         data: deriveChatSnapshot(
           store.state,
           agent.getActiveStatuses(),
-          agent.getDrainingChatIds(),
+          getDrainingChatIds(),
           topic.chatId,
           (chatId) => store.getRecentChatHistory(chatId, topic.recentLimit ?? DEFAULT_CHAT_RECENT_LIMIT),
           (chatId) => resolvedDiffStore.getSnapshot(chatId)
@@ -754,6 +758,15 @@ export function createWsRouter({
           const chat = await store.createChat(command.projectId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { chatId: chat.id } })
           await broadcastChatAndSidebar(chat.id)
+          return
+        }
+        case "chat.fork": {
+          const result = await agent.forkChat(command.chatId)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          await broadcastFilteredSnapshots({
+            includeSidebar: true,
+            chatIds: new Set([command.chatId, result.chatId]),
+          })
           return
         }
         case "chat.rename": {

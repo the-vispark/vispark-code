@@ -13,7 +13,7 @@ import { resolveLocalPath } from "./paths"
 import { SERVER_PROVIDERS } from "./provider-catalog"
 
 const SIDEBAR_RECENT_WINDOW_MS = 24 * 60 * 60 * 1_000
-const SIDEBAR_RECENT_PREVIEW_LIMIT = 10
+const SIDEBAR_RECENT_PREVIEW_LIMIT = 5
 const SIDEBAR_FALLBACK_PREVIEW_LIMIT = 5
 
 export function deriveStatus(chat: ChatRecord, activeStatus?: VisparkCodeStatus): VisparkCodeStatus {
@@ -50,8 +50,11 @@ function getSidebarChatBuckets(chats: SidebarChatRow[], nowMs: number) {
 export function deriveSidebarData(
   state: StoreState,
   activeStatuses: Map<string, VisparkCodeStatus>,
-  nowMs = Date.now()
+  drainingChatIdsOrNowMs: Set<string> | number = new Set<string>(),
+  maybeNowMs = Date.now()
 ): SidebarData {
+  const drainingChatIds = drainingChatIdsOrNowMs instanceof Set ? drainingChatIdsOrNowMs : new Set<string>()
+  const nowMs = typeof drainingChatIdsOrNowMs === "number" ? drainingChatIdsOrNowMs : maybeNowMs
   const chatsByProjectId = new Map<string, ChatRecord[]>()
   for (const chat of state.chatsById.values()) {
     if (chat.deletedAt) continue
@@ -91,6 +94,12 @@ export function deriveSidebarData(
         provider: chat.provider,
         lastMessageAt: chat.lastMessageAt,
         hasAutomation: false,
+        canFork: Boolean(
+          chat.provider
+          && !activeStatuses.has(chat.id)
+          && !drainingChatIds.has(chat.id)
+          && (chat.sessionToken || chat.pendingForkSessionToken)
+        ),
       }))
     const { previewChats, olderChats } = getSidebarChatBuckets(chats, nowMs)
 

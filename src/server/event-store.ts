@@ -76,6 +76,7 @@ function getReplayEventPriority(event: StoreEvent) {
     case "turn_started":
       return 5
     case "session_token_set":
+    case "pending_fork_session_token_set":
       return 6
     case "turn_cancelled":
       return 7
@@ -124,6 +125,7 @@ export class EventStore {
   private readonly messagesLogPath: string
   private readonly queuedMessagesLogPath: string
   private readonly turnsLogPath: string
+  private readonly sidebarOrderPath: string
   private readonly transcriptsDir: string
   private legacyMessagesByChatId = new Map<string, TranscriptEntry[]>()
   private snapshotHasLegacyMessages = false
@@ -137,6 +139,7 @@ export class EventStore {
     this.messagesLogPath = path.join(this.dataDir, "messages.jsonl")
     this.queuedMessagesLogPath = path.join(this.dataDir, "queued-messages.jsonl")
     this.turnsLogPath = path.join(this.dataDir, "turns.jsonl")
+    this.sidebarOrderPath = path.join(this.dataDir, "sidebar-order.json")
     this.transcriptsDir = path.join(this.dataDir, "transcripts")
   }
 
@@ -151,6 +154,7 @@ export class EventStore {
     await this.ensureFile(this.turnsLogPath)
     await this.loadSnapshot()
     await this.replayLogs()
+    await this.reconcileSidebarProjectOrderFile()
     if (!(await this.hasLegacyTranscriptData()) && await this.shouldCompact()) {
       await this.compact()
     }
@@ -175,7 +179,38 @@ export class EventStore {
       Bun.write(this.messagesLogPath, ""),
       Bun.write(this.queuedMessagesLogPath, ""),
       Bun.write(this.turnsLogPath, ""),
+      Bun.write(this.sidebarOrderPath, ""),
     ])
+  }
+
+  private getValidSidebarProjectOrder(projectIds: string[]) {
+    return [...new Set(projectIds.filter((projectId) => {
+      const project = this.state.projectsById.get(projectId)
+      return Boolean(project && !project.deletedAt)
+    }))]
+  }
+
+  private async persistSidebarProjectOrder() {
+    await Bun.write(this.sidebarOrderPath, JSON.stringify(this.state.sidebarProjectOrder, null, 2))
+  }
+
+  private async reconcileSidebarProjectOrderFile() {
+    const file = Bun.file(this.sidebarOrderPath)
+    if (await file.exists()) {
+      try {
+        const parsed = JSON.parse(await file.text()) as unknown
+        const projectIds = Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : []
+        this.state.sidebarProjectOrder = this.getValidSidebarProjectOrder(projectIds)
+      } catch (error) {
+        console.warn(`${LOG_PREFIX} Ignoring invalid sidebar project order file:`, error)
+      }
+      return
+    }
+
+    if (this.state.sidebarProjectOrder.length > 0) {
+      this.state.sidebarProjectOrder = this.getValidSidebarProjectOrder(this.state.sidebarProjectOrder)
+      await this.persistSidebarProjectOrder()
+    }
   }
 
   private async loadSnapshot() {
@@ -332,7 +367,7 @@ export class EventStore {
         break
       }
       case "chat_created": {
-      const chat = {
+        const chat = {
           id: event.chatId,
           projectId: event.projectId,
           title: event.title,
@@ -342,6 +377,7 @@ export class EventStore {
           provider: null,
           planMode: false,
           sessionToken: null,
+          pendingForkSessionToken: null,
           lastError: null,
           lastTurnOutcome: null,
         }
@@ -458,6 +494,13 @@ export class EventStore {
         chat.updatedAt = event.timestamp
         break
       }
+      case "pending_fork_session_token_set": {
+        const chat = this.state.chatsById.get(event.chatId)
+        if (!chat) break
+        chat.pendingForkSessionToken = event.sessionToken
+        chat.updatedAt = event.timestamp
+        break
+      }
     }
   }
 
@@ -540,11 +583,7 @@ export class EventStore {
   }
 
   async setSidebarProjectOrder(projectIds: string[]) {
-    const validProjectIds = projectIds.filter((projectId) => {
-      const project = this.state.projectsById.get(projectId)
-      return Boolean(project && !project.deletedAt)
-    })
-    const uniqueProjectIds = [...new Set(validProjectIds)]
+    const uniqueProjectIds = this.getValidSidebarProjectOrder(projectIds)
     const current = this.state.sidebarProjectOrder
     if (
       uniqueProjectIds.length === current.length
@@ -560,6 +599,7 @@ export class EventStore {
       projectIds: uniqueProjectIds,
     }
     await this.append(this.projectsLogPath, event)
+    await this.persistSidebarProjectOrder()
   }
 
   async createChat(projectId: string) {
@@ -578,6 +618,38 @@ export class EventStore {
     }
     await this.append(this.chatsLogPath, event)
     return this.state.chatsById.get(chatId)!
+  }
+
+  async forkChat(chatId: string) {
+    const sourceChat = this.requireChat(chatId)
+    const sourceSessionToken = sourceChat.pendingForkSessionToken ?? sourceChat.sessionToken
+    if (!sourceSessionToken) {
+      throw new Error("Chat has no session to fork")
+    }
+
+    const forkedChat = await this.createChat(sourceChat.projectId)
+    await this.renameChat(forkedChat.id, `Fork: ${sourceChat.title}`)
+    if (sourceChat.provider) {
+      await this.setChatProvider(forkedChat.id, sourceChat.provider)
+    }
+    await this.setPlanMode(forkedChat.id, sourceChat.planMode)
+    await this.setPendingForkSessionToken(forkedChat.id, sourceSessionToken)
+
+    const sourceMessages = this.getMessages(chatId)
+    const transcriptPath = this.transcriptPath(forkedChat.id)
+    await mkdir(this.transcriptsDir, { recursive: true })
+    const payload = sourceMessages.map((entry) => JSON.stringify(entry)).join("\n")
+    await writeFile(transcriptPath, payload ? `${payload}\n` : "", "utf8")
+
+    if (sourceMessages.length > 0) {
+      const latestUserPrompt = [...sourceMessages].reverse().find((entry) => entry.kind === "user_prompt")
+      const storedFork = this.state.chatsById.get(forkedChat.id)
+      if (storedFork) {
+        storedFork.lastMessageAt = latestUserPrompt?.createdAt
+      }
+    }
+
+    return this.requireChat(forkedChat.id)
   }
 
   async renameChat(chatId: string, title: string) {
@@ -824,10 +896,27 @@ export class EventStore {
     await this.append(this.turnsLogPath, event)
   }
 
+  async setPendingForkSessionToken(chatId: string, sessionToken: string | null) {
+    const chat = this.requireChat(chatId)
+    if (chat.pendingForkSessionToken === sessionToken) return
+    const event: TurnEvent = {
+      v: STORE_VERSION,
+      type: "pending_fork_session_token_set",
+      timestamp: Date.now(),
+      chatId,
+      sessionToken,
+    }
+    await this.append(this.turnsLogPath, event)
+  }
+
   getProject(projectId: string) {
     const project = this.state.projectsById.get(projectId)
     if (!project || project.deletedAt) return null
     return project
+  }
+
+  getSidebarProjectOrder() {
+    return [...this.state.sidebarProjectOrder]
   }
 
   requireChat(chatId: string) {
@@ -975,7 +1064,6 @@ export class EventStore {
       v: STORE_VERSION,
       generatedAt: Date.now(),
       projects: this.listProjects().map((project) => ({ ...project })),
-      sidebarProjectOrder: [...this.state.sidebarProjectOrder],
       chats: [...this.state.chatsById.values()]
         .filter((chat) => !chat.deletedAt)
         .map((chat) => ({ ...chat })),
@@ -994,6 +1082,7 @@ export class EventStore {
     const snapshot = this.createSnapshot()
     await Bun.write(this.snapshotPath, JSON.stringify(snapshot, null, 2))
     await Promise.all([
+      this.persistSidebarProjectOrder(),
       Bun.write(this.projectsLogPath, ""),
       Bun.write(this.chatsLogPath, ""),
       Bun.write(this.messagesLogPath, ""),

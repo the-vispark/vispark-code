@@ -88,6 +88,7 @@ describe("migrateChatPreferencesState", () => {
 
     expect(migrated.showTranscriptToc).toBe(true)
   })
+
 })
 
 describe("chat preference store", () => {

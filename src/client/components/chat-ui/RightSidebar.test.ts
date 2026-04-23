@@ -294,27 +294,21 @@ describe("RightSidebar", () => {
       path: "tmp/cache/output.log",
       changeType: "added",
       isUntracked: true,
-      additions: 0,
-      deletions: 0,
-      patchDigest: "digest-4",
+      patch: "",
     })).toBe(true)
 
     expect(canIgnoreDiffFolder({
       path: "scratch.log",
       changeType: "added",
       isUntracked: true,
-      additions: 0,
-      deletions: 0,
-      patchDigest: "digest-5",
+      patch: "",
     })).toBe(false)
 
     expect(canIgnoreDiffFolder({
       path: "src/app.ts",
       changeType: "modified",
       isUntracked: false,
-      additions: 0,
-      deletions: 0,
-      patchDigest: "digest-6",
+      patch: "",
     })).toBe(false)
   })
 })

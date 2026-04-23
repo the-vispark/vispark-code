@@ -85,9 +85,11 @@ function extractStoredUploadName(pathname: string, prefix: string, suffix = "") 
 }
 
 export interface StartVisparkCodeServerOptions {
+  dataDir?: string
   port?: number
   host?: string
   password?: string | null
+  trustProxy?: boolean
   strictPort?: boolean
   onMigrationProgress?: (message: string) => void
   update?: {
@@ -101,13 +103,13 @@ export async function startVisparkCodeServer(options: StartVisparkCodeServerOpti
   const port = options.port ?? 3210
   const hostname = options.host ?? "127.0.0.1"
   const strictPort = options.strictPort ?? false
-  const auth = options.password ? createAuthManager(options.password) : null
+  const auth = options.password ? createAuthManager(options.password, { trustProxy: options.trustProxy }) : null
   const devClientPort = Number.parseInt(process.env.VISPARK_DEV_CLIENT_PORT ?? "", 10)
   const devClientOrigin = Number.isFinite(devClientPort) ? `http://localhost:${devClientPort || DEV_CLIENT_PORT}` : null
   ensureVendoredHarness()
   const harnessRuntime = getHarnessRuntimeInfo()
   const settings = new AppSettingsStore()
-  const store = new EventStore()
+  const store = new EventStore(options.dataDir)
   const machineDisplayName = getMachineDisplayName()
   await store.initialize()
   await store.migrateLegacyTranscripts?.(options.onMigrationProgress)
@@ -209,10 +211,14 @@ export async function startVisparkCodeServer(options: StartVisparkCodeServerOpti
               : Response.json({ ok: true })
           }
 
+          if (url.pathname === "/health") {
+            return Response.json({ ok: true, port: actualPort })
+          }
+
           if (auth) {
             if (url.pathname === "/auth/login") {
               if (req.method === "GET") {
-                return auth.renderLoginPage(req)
+                return auth.redirectToApp(req)
               }
               if (req.method === "POST") {
                 return auth.handleLogin(req, "/")
@@ -227,8 +233,8 @@ export async function startVisparkCodeServer(options: StartVisparkCodeServerOpti
               if (!auth.isAuthenticated(req)) {
                 return new Response("Unauthorized", { status: 401 })
               }
-            } else if (!auth.isAuthenticated(req)) {
-              return auth.unauthorizedResponse(req)
+            } else if (url.pathname.startsWith("/api/") && !auth.isAuthenticated(req)) {
+              return Response.json({ error: "Unauthorized" }, { status: 401 })
             }
           }
 
@@ -240,10 +246,6 @@ export async function startVisparkCodeServer(options: StartVisparkCodeServerOpti
               },
             })
             return upgraded ? undefined : new Response("WebSocket upgrade failed", { status: 400 })
-          }
-
-          if (url.pathname === "/health") {
-            return Response.json({ ok: true, port: actualPort })
           }
 
           const uploadBatchMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/uploads$/)
@@ -424,7 +426,11 @@ async function serveStatic(distDir: string, pathname: string) {
 
   const file = Bun.file(filePath)
   if (await file.exists()) {
-    return new Response(file)
+    return new Response(file, {
+      headers: requestedPath.endsWith(".html")
+        ? { "Cache-Control": "no-store" }
+        : undefined,
+    })
   }
 
   const indexFile = Bun.file(indexPath)
@@ -432,6 +438,7 @@ async function serveStatic(distDir: string, pathname: string) {
     return new Response(indexFile, {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
       },
     })
   }

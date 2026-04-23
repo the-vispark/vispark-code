@@ -26,6 +26,7 @@ interface VisparkCodeSidebarProps {
   onCollapse: () => void
   onExpand: () => void
   onCreateChat: (projectId: string) => void
+  onForkChat: (chat: SidebarChatRow) => void
   onDeleteChat: (chat: SidebarChatRow) => void
   onCopyPath: (localPath: string) => void
   onOpenExternalPath: (action: "open_finder" | "open_editor", localPath: string) => void
@@ -49,6 +50,7 @@ export function VisparkCodeSidebar({
   onCollapse,
   onExpand,
   onCreateChat,
+  onForkChat,
   onDeleteChat,
   onCopyPath,
   onOpenExternalPath,
@@ -136,9 +138,10 @@ export function VisparkCodeSidebar({
         navigate(`/chat/${chatId}`)
         onClose()
       }}
+      onForkChat={() => onForkChat(chat)}
       onDeleteChat={() => onDeleteChat(chat)}
     />
-  ), [activeChatId, navigate, nowMs, onClose, onDeleteChat])
+  ), [activeChatId, navigate, nowMs, onClose, onDeleteChat, onForkChat])
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {

@@ -53,11 +53,19 @@ function withSidebarGroupDefaults(group: {
     provider: "vision" | null
     lastMessageAt?: number
     hasAutomation: boolean
+    canFork?: boolean
   }>
 }) {
   return {
     ...group,
-    previewChats: group.chats,
+    chats: group.chats.map((chat) => ({
+      ...chat,
+      canFork: chat.canFork ?? false,
+    })),
+    previewChats: group.chats.map((chat) => ({
+      ...chat,
+      canFork: chat.canFork ?? false,
+    })),
     olderChats: [],
     defaultCollapsed: true,
   }
