@@ -1,3 +1,4 @@
+import process from "node:process"
 import type {
   ChatDiffSnapshot,
   ChatRuntime,
@@ -13,7 +14,6 @@ import { resolveLocalPath } from "./paths"
 import { SERVER_PROVIDERS } from "./provider-catalog"
 
 const SIDEBAR_RECENT_WINDOW_MS = 24 * 60 * 60 * 1_000
-const SIDEBAR_RECENT_PREVIEW_LIMIT = 5
 const SIDEBAR_FALLBACK_PREVIEW_LIMIT = 5
 
 export function deriveStatus(chat: ChatRecord, activeStatus?: VisparkCodeStatus): VisparkCodeStatus {
@@ -37,7 +37,7 @@ function isSidebarChatRecent(chat: Pick<SidebarChatRow, "lastMessageAt" | "_crea
 function getSidebarChatBuckets(chats: SidebarChatRow[], nowMs: number) {
   const recentChats = chats.filter((chat) => isSidebarChatRecent(chat, nowMs))
   const previewChats = recentChats.length > 0
-    ? recentChats.slice(0, SIDEBAR_RECENT_PREVIEW_LIMIT)
+    ? recentChats
     : chats.slice(0, Math.min(SIDEBAR_FALLBACK_PREVIEW_LIMIT, chats.length))
   const previewChatIds = new Set(previewChats.map((chat) => chat.chatId))
 
@@ -56,14 +56,16 @@ export function deriveSidebarData(
   const drainingChatIds = drainingChatIdsOrNowMs instanceof Set ? drainingChatIdsOrNowMs : new Set<string>()
   const nowMs = typeof drainingChatIdsOrNowMs === "number" ? drainingChatIdsOrNowMs : maybeNowMs
   const chatsByProjectId = new Map<string, ChatRecord[]>()
+  const archivedChatsByProjectId = new Map<string, ChatRecord[]>()
   for (const chat of state.chatsById.values()) {
     if (chat.deletedAt) continue
-    const projectChats = chatsByProjectId.get(chat.projectId)
+    const targetMap = chat.archivedAt ? archivedChatsByProjectId : chatsByProjectId
+    const projectChats = targetMap.get(chat.projectId)
     if (projectChats) {
       projectChats.push(chat)
       continue
     }
-    chatsByProjectId.set(chat.projectId, [chat])
+    targetMap.set(chat.projectId, [chat])
   }
 
   const allProjects = [...state.projectsById.values()]
@@ -80,8 +82,8 @@ export function deriveSidebarData(
     ...unorderedProjects.filter((project) => !orderedProjectIds.has(project.id)),
   ]
 
-  const projectGroups: SidebarProjectGroup[] = projects.map((project) => {
-    const chats: SidebarChatRow[] = (chatsByProjectId.get(project.id) ?? [])
+  function toSidebarChatRows(project: NonNullable<typeof projects[number]>, projectChats: ChatRecord[]) {
+    return projectChats
       .sort((a, b) => getSidebarChatSortTimestamp(b) - getSidebarChatSortTimestamp(a))
       .map((chat) => ({
         _id: chat.id,
@@ -101,6 +103,11 @@ export function deriveSidebarData(
           && (chat.sessionToken || chat.pendingForkSessionToken)
         ),
       }))
+  }
+
+  const projectGroups: SidebarProjectGroup[] = projects.map((project) => {
+    const chats = toSidebarChatRows(project, chatsByProjectId.get(project.id) ?? [])
+    const archivedChats = toSidebarChatRows(project, archivedChatsByProjectId.get(project.id) ?? [])
     const { previewChats, olderChats } = getSidebarChatBuckets(chats, nowMs)
 
     return {
@@ -109,6 +116,7 @@ export function deriveSidebarData(
       chats,
       previewChats,
       olderChats,
+      ...(archivedChats.length ? { archivedChats } : {}),
       defaultCollapsed: chats.every((chat) => !isSidebarChatRecent(chat, nowMs)),
     }
   })
@@ -135,7 +143,7 @@ export function deriveLocalProjectsSnapshot(
   }
 
   for (const project of [...state.projectsById.values()].filter((entry) => !entry.deletedAt)) {
-    const chats = [...state.chatsById.values()].filter((chat) => chat.projectId === project.id && !chat.deletedAt)
+    const chats = [...state.chatsById.values()].filter((chat) => chat.projectId === project.id && !chat.deletedAt && !chat.archivedAt)
     const lastOpenedAt = chats.reduce(
       (latest, chat) => Math.max(latest, getSidebarChatSortTimestamp(chat)),
       project.updatedAt
@@ -154,6 +162,7 @@ export function deriveLocalProjectsSnapshot(
     machine: {
       id: "local",
       displayName: machineName,
+      platform: process.platform,
     },
     projects: [...projects.values()].sort((a, b) => (b.lastOpenedAt ?? 0) - (a.lastOpenedAt ?? 0)),
   }

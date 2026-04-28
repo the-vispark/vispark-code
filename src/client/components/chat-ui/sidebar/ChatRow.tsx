@@ -6,6 +6,7 @@ import { Button } from "../../ui/button"
 import { formatSidebarAgeLabel } from "../../../lib/formatters"
 import { getSidebarChatTimestamp } from "../../../lib/sidebarChats"
 import { cn, normalizeChatId } from "../../../lib/utils"
+import { ChatRowMenu } from "./Menus"
 
 const loadingStatuses = new Set(["starting", "running"])
 
@@ -14,7 +15,10 @@ interface Props {
   activeChatId: string | null
   nowMs: number
   onSelectChat: (chatId: string) => void
+  onRenameChat: (chatId: string) => void
+  onOpenInFinder: (localPath: string) => void
   onForkChat: (chatId: string) => void
+  onArchiveChat: (chatId: string) => void
   onDeleteChat: (chatId: string) => void
 }
 
@@ -23,13 +27,16 @@ function ChatRowImpl({
   activeChatId,
   nowMs,
   onSelectChat,
+  onRenameChat,
+  onOpenInFinder,
   onForkChat,
+  onArchiveChat,
   onDeleteChat,
 }: Props) {
   const ageLabel = formatSidebarAgeLabel(getSidebarChatTimestamp(chat), nowMs)
   const normalizedChatId = normalizeChatId(chat.chatId)
 
-  return (
+  const row = (
     <div
       key={chat._id}
       data-chat-id={normalizedChatId}
@@ -104,15 +111,28 @@ function ChatRowImpl({
             className="h-6 w-6 cursor-pointer rounded-sm hover:!bg-transparent !border-0"
             onClick={(event) => {
               event.stopPropagation()
-              onDeleteChat(chat.chatId)
+              onArchiveChat(chat.chatId)
             }}
-            title="Delete chat"
+            title="Archive chat"
           >
             <Archive className="size-3.5" />
           </Button>
         </div>
       </div>
     </div>
+  )
+
+  return (
+    <ChatRowMenu
+      canFork={chat.canFork}
+      onRename={() => onRenameChat(chat.chatId)}
+      onOpenInFinder={() => onOpenInFinder(chat.localPath)}
+      onFork={() => onForkChat(chat.chatId)}
+      onArchive={() => onArchiveChat(chat.chatId)}
+      onDelete={() => onDeleteChat(chat.chatId)}
+    >
+      {row}
+    </ChatRowMenu>
   )
 }
 

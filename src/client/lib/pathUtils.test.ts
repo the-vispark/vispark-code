@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { parseLocalFileLink } from "./pathUtils"
+import { parseLocalFileLink, shouldOpenLocalFileLinkInEditor } from "./pathUtils"
 
 describe("parseLocalFileLink", () => {
   test("parses an absolute file path with a line fragment", () => {
@@ -59,5 +59,21 @@ describe("parseLocalFileLink", () => {
 
   test("does not treat web links as local file links", () => {
     expect(parseLocalFileLink("https://example.com")).toBeNull()
+  })
+})
+
+describe("shouldOpenLocalFileLinkInEditor", () => {
+  test("opens source, markdown, and text files in the editor", () => {
+    expect(shouldOpenLocalFileLinkInEditor("/Users/jake/Projects/vispark-code/src/app.ts")).toBe(true)
+    expect(shouldOpenLocalFileLinkInEditor("/Users/jake/Projects/vispark-code/README.md")).toBe(true)
+    expect(shouldOpenLocalFileLinkInEditor("/Users/jake/Projects/vispark-code/notes.txt")).toBe(true)
+    expect(shouldOpenLocalFileLinkInEditor("/Users/jake/Projects/vispark-code/.gitignore")).toBe(true)
+  })
+
+  test("opens media and document files in the default app", () => {
+    expect(shouldOpenLocalFileLinkInEditor("/Users/jake/Projects/vispark-code/shot.png")).toBe(false)
+    expect(shouldOpenLocalFileLinkInEditor("/Users/jake/Projects/vispark-code/movie.mp4")).toBe(false)
+    expect(shouldOpenLocalFileLinkInEditor("/Users/jake/Projects/vispark-code/report.docx")).toBe(false)
+    expect(shouldOpenLocalFileLinkInEditor("/Users/jake/Projects/vispark-code/archive.zip")).toBe(false)
   })
 })

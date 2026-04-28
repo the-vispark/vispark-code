@@ -2,6 +2,10 @@ export const STORE_VERSION = 2 as const
 export const PROTOCOL_VERSION = 1 as const
 
 export type AgentProvider = "vision"
+export type AppThemePreference = "light" | "dark" | "system"
+export type ChatSoundPreference = "never" | "unfocused" | "always"
+export type ChatSoundId = "blow" | "bottle" | "frog" | "funk" | "glass" | "ping" | "pop" | "purr" | "tink"
+export type EditorPreset = "cursor" | "vscode" | "xcode" | "windsurf" | "custom"
 
 export type AttachmentKind = "image" | "file"
 
@@ -128,6 +132,7 @@ export interface SidebarProjectGroup {
   chats: SidebarChatRow[]
   previewChats: SidebarChatRow[]
   olderChats: SidebarChatRow[]
+  archivedChats?: SidebarChatRow[]
   defaultCollapsed: boolean
 }
 
@@ -147,6 +152,7 @@ export interface LocalProjectsSnapshot {
   machine: {
     id: "local"
     displayName: string
+    platform: NodeJS.Platform
   }
   projects: LocalProjectSummary[]
 }
@@ -244,6 +250,29 @@ export interface AccountInfo {
 export interface AppSettingsSnapshot {
   visionApiKey: string
   visionContinualLearningWeightsPath: string
+  browserSettingsMigrated: boolean
+  theme: AppThemePreference
+  chatSoundPreference: ChatSoundPreference
+  chatSoundId: ChatSoundId
+  terminal: {
+    scrollbackLines: number
+    minColumnWidth: number
+  }
+  editor: {
+    preset: EditorPreset
+    commandTemplate: string
+  }
+  warning: string | null
+  filePathDisplay: string
+}
+
+export interface AppSettingsPatch {
+  browserSettingsMigrated?: boolean
+  theme?: AppThemePreference
+  chatSoundPreference?: ChatSoundPreference
+  chatSoundId?: ChatSoundId
+  terminal?: Partial<AppSettingsSnapshot["terminal"]>
+  editor?: Partial<AppSettingsSnapshot["editor"]>
 }
 
 export interface AskUserQuestionOption {

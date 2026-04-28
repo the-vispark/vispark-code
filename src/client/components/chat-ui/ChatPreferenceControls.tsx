@@ -31,7 +31,7 @@ export function PopoverMenuItem({
   onClick: () => void
   selected: boolean
   icon: React.ReactNode
-  label: string
+  label: React.ReactNode
   description?: string
   disabled?: boolean
 }) {

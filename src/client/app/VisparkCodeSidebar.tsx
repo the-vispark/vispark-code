@@ -1,16 +1,40 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import { Loader2, Menu, PanelLeft, Plus, Settings, X } from "lucide-react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { APP_NAME } from "../../shared/branding"
 import type { SidebarChatRow, SidebarData, UpdateSnapshot } from "../../shared/types"
+import { Dialog, DialogBody, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog"
+import { formatSidebarAgeLabel } from "../lib/formatters"
+import { getSidebarChatTimestamp } from "../lib/sidebarChats"
+import { cn } from "../lib/utils"
 import { ChatRow } from "../components/chat-ui/sidebar/ChatRow"
 import { LocalProjectsSection } from "../components/chat-ui/sidebar/LocalProjectsSection"
 import { Button } from "../components/ui/button"
-import { cn } from "../lib/utils"
 import type { SocketStatus } from "./socket"
 
 function BrandMark({ className }: { className?: string }) {
   return <img src="/favicon.png" alt="" className={className} />
+}
+
+const SIDEBAR_WIDTH_STORAGE_KEY = "vispark-code:sidebar-width"
+export const DEFAULT_SIDEBAR_WIDTH = 275
+export const MIN_SIDEBAR_WIDTH = 220
+export const MAX_SIDEBAR_WIDTH = 520
+
+export function clampSidebarWidth(width: number) {
+  if (!Number.isFinite(width)) return DEFAULT_SIDEBAR_WIDTH
+  return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, Math.round(width)))
+}
+
+function readStoredSidebarWidth() {
+  if (typeof window === "undefined") return DEFAULT_SIDEBAR_WIDTH
+  const stored = window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY)
+  return stored ? clampSidebarWidth(Number(stored)) : DEFAULT_SIDEBAR_WIDTH
+}
+
+function persistSidebarWidth(width: number) {
+  if (typeof window === "undefined") return
+  window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(clampSidebarWidth(width)))
 }
 
 interface VisparkCodeSidebarProps {
@@ -27,10 +51,13 @@ interface VisparkCodeSidebarProps {
   onExpand: () => void
   onCreateChat: (projectId: string) => void
   onForkChat: (chat: SidebarChatRow) => void
+  onRenameChat: (chat: SidebarChatRow) => void
+  onArchiveChat: (chat: SidebarChatRow) => void
+  onOpenArchivedChat: (chatId: string) => void
   onDeleteChat: (chat: SidebarChatRow) => void
   onCopyPath: (localPath: string) => void
   onOpenExternalPath: (action: "open_finder" | "open_editor", localPath: string) => void
-  onRemoveProject: (projectId: string) => void
+  onHideProject: (projectId: string) => void
   onReorderProjectGroups: (projectIds: string[]) => void
   editorLabel: string
   updateSnapshot: UpdateSnapshot | null
@@ -51,10 +78,13 @@ export function VisparkCodeSidebar({
   onExpand,
   onCreateChat,
   onForkChat,
+  onRenameChat,
+  onArchiveChat,
+  onOpenArchivedChat,
   onDeleteChat,
   onCopyPath,
   onOpenExternalPath,
-  onRemoveProject,
+  onHideProject,
   onReorderProjectGroups,
   editorLabel,
   updateSnapshot,
@@ -63,10 +93,14 @@ export function VisparkCodeSidebar({
   const location = useLocation()
   const navigate = useNavigate()
   const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const resizeStartRef = useRef<{ pointerX: number; width: number } | null>(null)
   const initializedCollapsedGroupKeysRef = useRef<Set<string>>(new Set())
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set())
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
   const [nowMs, setNowMs] = useState(() => Date.now())
+  const [sidebarWidth, setSidebarWidth] = useState(readStoredSidebarWidth)
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false)
+  const [archivedProjectId, setArchivedProjectId] = useState<string | null>(null)
 
   const projectIdByPath = useMemo(
     () => new Map(data.projectGroups.map((group) => [group.localPath, group.groupKey])),
@@ -76,6 +110,10 @@ export function VisparkCodeSidebar({
   const activeVisibleCount = useMemo(
     () => data.projectGroups.reduce((count, group) => count + group.chats.length, 0),
     [data.projectGroups]
+  )
+  const archivedProject = useMemo(
+    () => data.projectGroups.find((group) => group.groupKey === archivedProjectId) ?? null,
+    [archivedProjectId, data.projectGroups]
   )
 
   useEffect(() => {
@@ -138,10 +176,13 @@ export function VisparkCodeSidebar({
         navigate(`/chat/${chatId}`)
         onClose()
       }}
+      onRenameChat={() => onRenameChat(chat)}
+      onOpenInFinder={() => onOpenExternalPath("open_finder", chat.localPath)}
       onForkChat={() => onForkChat(chat)}
+      onArchiveChat={() => onArchiveChat(chat)}
       onDeleteChat={() => onDeleteChat(chat)}
     />
-  ), [activeChatId, navigate, nowMs, onClose, onDeleteChat, onForkChat])
+  ), [activeChatId, navigate, nowMs, onArchiveChat, onClose, onDeleteChat, onForkChat, onOpenExternalPath, onRenameChat])
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -171,7 +212,42 @@ export function VisparkCodeSidebar({
         container.scrollTo({ top: elementCenter - containerCenter, behavior: "smooth" })
       }
     })
-  }, [activeChatId, activeVisibleCount])
+  }, [activeChatId])
+
+  useEffect(() => {
+    if (!isResizingSidebar) return
+
+    const previousCursor = document.body.style.cursor
+    const previousUserSelect = document.body.style.userSelect
+    document.body.style.cursor = "col-resize"
+    document.body.style.userSelect = "none"
+
+    function handlePointerMove(event: PointerEvent) {
+      const resizeStart = resizeStartRef.current
+      if (!resizeStart) return
+      setSidebarWidth(clampSidebarWidth(resizeStart.width + event.clientX - resizeStart.pointerX))
+    }
+
+    function handlePointerUp() {
+      setIsResizingSidebar(false)
+      resizeStartRef.current = null
+      setSidebarWidth((current) => {
+        const next = clampSidebarWidth(current)
+        persistSidebarWidth(next)
+        return next
+      })
+    }
+
+    window.addEventListener("pointermove", handlePointerMove)
+    window.addEventListener("pointerup", handlePointerUp, { once: true })
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove)
+      window.removeEventListener("pointerup", handlePointerUp)
+      document.body.style.cursor = previousCursor
+      document.body.style.userSelect = previousUserSelect
+    }
+  }, [isResizingSidebar])
 
   const hasVisibleChats = activeVisibleCount > 0
   const isLocalProjectsActive = location.pathname === "/"
@@ -215,11 +291,12 @@ export function VisparkCodeSidebar({
       <div
         data-sidebar="open"
         className={cn(
-          "fixed inset-0 z-50 flex h-[100dvh] select-none flex-col bg-background dark:bg-card",
-          "md:relative md:inset-auto md:my-2 md:ml-2 md:mr-0 md:h-[calc(100dvh-16px)] md:w-[275px] md:rounded-2xl md:border md:border-border",
+          "fixed inset-0 z-50 bg-background dark:bg-card flex flex-col h-[100dvh] select-none",
+          "md:relative md:inset-auto md:w-[var(--sidebar-width)] md:mr-0 md:h-[calc(100dvh-16px)] md:my-2 md:ml-2 md:border md:border-border md:rounded-2xl",
           open ? "flex" : "hidden md:flex",
           collapsed && "md:hidden"
         )}
+        style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
       >
         <div className="grid h-[64px] max-h-[64px] grid-cols-[40px_minmax(0,1fr)_40px] items-center border-b px-[5px] md:flex md:h-[55px] md:max-h-[55px] md:justify-between md:px-[7px] md:pl-3">
           <div className="md:hidden">
@@ -321,6 +398,7 @@ export function VisparkCodeSidebar({
               onToggleSection={toggleSection}
               onToggleExpandedGroup={toggleExpandedGroup}
               renderChatRow={renderChatRow}
+              onShowArchivedProject={setArchivedProjectId}
               onNewLocalChat={(localPath) => {
                 const projectId = projectIdByPath.get(localPath)
                 if (projectId) {
@@ -329,7 +407,7 @@ export function VisparkCodeSidebar({
               }}
               onCopyPath={onCopyPath}
               onOpenExternalPath={onOpenExternalPath}
-              onRemoveProject={onRemoveProject}
+              onHideProject={onHideProject}
               isConnected={connectionStatus === "connected"}
             />
           </div>
@@ -365,9 +443,85 @@ export function VisparkCodeSidebar({
             </div>
           </button>
         </div>
+
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize sidebar"
+          tabIndex={0}
+          title="Resize sidebar"
+          className={cn(
+            "hidden md:block absolute -right-1 top-3 bottom-3 z-20 w-2 cursor-col-resize rounded-full",
+            "focus-visible:outline-none"
+          )}
+          onPointerDown={(event) => {
+            event.preventDefault()
+            resizeStartRef.current = {
+              pointerX: event.clientX,
+              width: sidebarWidth,
+            }
+            setIsResizingSidebar(true)
+          }}
+          onDoubleClick={() => {
+            setSidebarWidth(DEFAULT_SIDEBAR_WIDTH)
+            persistSidebarWidth(DEFAULT_SIDEBAR_WIDTH)
+          }}
+          onKeyDown={(event) => {
+            let nextWidth: number | null = null
+            if (event.key === "ArrowLeft") nextWidth = sidebarWidth - 16
+            else if (event.key === "ArrowRight") nextWidth = sidebarWidth + 16
+            else if (event.key === "Home") nextWidth = MIN_SIDEBAR_WIDTH
+            else if (event.key === "End") nextWidth = MAX_SIDEBAR_WIDTH
+            else if (event.key === "Enter") nextWidth = DEFAULT_SIDEBAR_WIDTH
+            if (nextWidth === null) return
+            event.preventDefault()
+            const clampedWidth = clampSidebarWidth(nextWidth)
+            setSidebarWidth(clampedWidth)
+            persistSidebarWidth(clampedWidth)
+          }}
+        />
       </div>
 
-      {open ? <div className="fixed inset-0 z-40 bg-black/40 md:hidden" onClick={onClose} /> : null}
+      <Dialog
+        open={Boolean(archivedProject)}
+        onOpenChange={(dialogOpen) => {
+          if (!dialogOpen) setArchivedProjectId(null)
+        }}
+      >
+        <DialogContent size="md">
+          <DialogHeader>
+            <DialogTitle>Archived Chats</DialogTitle>
+            <DialogDescription>
+              {archivedProject?.localPath ?? ""}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogBody className="space-y-1">
+            {archivedProject?.archivedChats?.length ? (
+              archivedProject.archivedChats.map((chat) => (
+                <button
+                  key={chat.chatId}
+                  type="button"
+                  className="flex w-full items-center justify-between gap-3 rounded-lg border border-border/0 px-3 py-2 text-left transition-colors hover:border-border hover:bg-muted"
+                  onClick={() => {
+                    onOpenArchivedChat(chat.chatId)
+                    setArchivedProjectId(null)
+                    onClose()
+                  }}
+                >
+                  <span className="min-w-0 truncate text-sm">{chat.title}</span>
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {formatSidebarAgeLabel(getSidebarChatTimestamp(chat), nowMs)}
+                  </span>
+                </button>
+              ))
+            ) : (
+              <p className="px-1 py-3 text-sm text-muted-foreground">No archived chats</p>
+            )}
+          </DialogBody>
+        </DialogContent>
+      </Dialog>
+
+      {open ? <div className="fixed inset-0 bg-black/40 z-40 md:hidden" onClick={onClose} /> : null}
     </>
   )
 }

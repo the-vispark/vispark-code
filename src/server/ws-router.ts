@@ -47,6 +47,7 @@ function countSubscriptionsByTopic(ws: ServerWebSocket<ClientState>) {
   let localProjects = 0
   let update = 0
   let keybindings = 0
+  let appSettings = 0
   let terminal = 0
 
   for (const topic of ws.data.subscriptions.values()) {
@@ -66,6 +67,9 @@ function countSubscriptionsByTopic(ws: ServerWebSocket<ClientState>) {
       case "keybindings":
         keybindings += 1
         break
+      case "app-settings":
+        appSettings += 1
+        break
       case "terminal":
         terminal += 1
         break
@@ -79,6 +83,7 @@ function countSubscriptionsByTopic(ws: ServerWebSocket<ClientState>) {
     localProjects,
     update,
     keybindings,
+    appSettings,
     terminal,
   }
 }
@@ -109,6 +114,7 @@ interface SnapshotBroadcastFilter {
   includeLocalProjects?: boolean
   includeUpdate?: boolean
   includeKeybindings?: boolean
+  includeAppSettings?: boolean
   chatIds?: Set<string>
   projectIds?: Set<string>
   terminalIds?: Set<string>
@@ -134,8 +140,41 @@ export function createWsRouter({
     getSnapshot: () => ({
       visionApiKey: "",
       visionContinualLearningWeightsPath: "",
+      browserSettingsMigrated: false,
+      theme: "system",
+      chatSoundPreference: "always",
+      chatSoundId: "funk",
+      terminal: {
+        scrollbackLines: 1_000,
+        minColumnWidth: 450,
+      },
+      editor: {
+        preset: "cursor",
+        commandTemplate: "cursor {path}",
+      },
+      warning: null,
+      filePathDisplay: "~/.vispark-code/data/settings.json",
     }),
     updateVisionApiKey: () => {},
+    writePatch: () => ({
+      visionApiKey: "",
+      visionContinualLearningWeightsPath: "",
+      browserSettingsMigrated: false,
+      theme: "system",
+      chatSoundPreference: "always",
+      chatSoundId: "funk",
+      terminal: {
+        scrollbackLines: 1_000,
+        minColumnWidth: 450,
+      },
+      editor: {
+        preset: "cursor",
+        commandTemplate: "cursor {path}",
+      },
+      warning: null,
+      filePathDisplay: "~/.vispark-code/data/settings.json",
+    }),
+    onChange: () => () => {},
     reset: () => {},
   } as unknown as AppSettingsStore,
   diffStore,
@@ -253,6 +292,9 @@ export function createWsRouter({
     if (topic.type === "keybindings") {
       return Boolean(filter.includeKeybindings)
     }
+    if (topic.type === "app-settings") {
+      return Boolean(filter.includeAppSettings)
+    }
     if (topic.type === "chat") {
       return filter.chatIds?.has(topic.chatId) ?? false
     }
@@ -324,6 +366,18 @@ export function createWsRouter({
         snapshot: {
           type: "keybindings",
           data: keybindings.getSnapshot(),
+        },
+      }
+    }
+
+    if (topic.type === "app-settings") {
+      return {
+        v: PROTOCOL_VERSION,
+        type: "snapshot",
+        id,
+        snapshot: {
+          type: "app-settings",
+          data: settings.getSnapshot(),
         },
       }
     }
@@ -622,6 +676,21 @@ export function createWsRouter({
     }
   })
 
+  const disposeAppSettingsEvents = settings.onChange(() => {
+    for (const ws of sockets) {
+      const snapshotSignatures = ensureSnapshotSignatures(ws)
+      for (const [id, topic] of ws.data.subscriptions.entries()) {
+        if (topic.type !== "app-settings") continue
+        const envelope = createEnvelope(id, topic)
+        if (envelope.type !== "snapshot") continue
+        const signature = JSON.stringify(envelope.snapshot)
+        if (snapshotSignatures.get(id) === signature) continue
+        snapshotSignatures.set(id, signature)
+        send(ws, envelope)
+      }
+    }
+  })
+
   const disposeUpdateEvents = updateManager?.onChange(() => {
     for (const ws of sockets) {
       const snapshotSignatures = ensureSnapshotSignatures(ws)
@@ -689,6 +758,15 @@ export function createWsRouter({
         }
         case "settings.writeKeybindings": {
           const snapshot = await keybindings.write(command.bindings)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
+          return
+        }
+        case "settings.readAppSettings": {
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: settings.getSnapshot() })
+          return
+        }
+        case "settings.writeAppSettingsPatch": {
+          const snapshot = settings.writePatch(command.patch)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
           return
         }
@@ -771,6 +849,18 @@ export function createWsRouter({
         }
         case "chat.rename": {
           await store.renameChat(command.chatId, command.title)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          await broadcastChatAndSidebar(command.chatId)
+          return
+        }
+        case "chat.archive": {
+          await store.archiveChat(command.chatId)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          await broadcastFilteredSnapshots({ includeSidebar: true })
+          return
+        }
+        case "chat.unarchive": {
+          await store.unarchiveChat(command.chatId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           await broadcastChatAndSidebar(command.chatId)
           return
@@ -1126,6 +1216,7 @@ export function createWsRouter({
       disposeTerminalEvents()
       disposeFileTreeEvents()
       disposeKeybindingEvents()
+      disposeAppSettingsEvents()
       disposeUpdateEvents()
     },
   }

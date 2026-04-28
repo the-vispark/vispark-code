@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react"
 import { useNavigate } from "react-router-dom"
 import { useShallow } from "zustand/react/shallow"
-import { APP_NAME } from "../../shared/branding"
 import {
   DEFAULT_VISION_MODEL_OPTIONS,
   PROVIDERS,
   type AgentProvider,
+  type AppSettingsPatch,
   type AppSettingsSnapshot,
   type AskUserQuestionAnswerMap,
   type ChatAttachment,
@@ -25,13 +25,18 @@ import { useRightSidebarStore } from "../stores/rightSidebarStore"
 import { useTerminalLayoutStore } from "../stores/terminalLayoutStore"
 import { getEditorPresetLabel, useTerminalPreferencesStore } from "../stores/terminalPreferencesStore"
 import { useChatInputStore } from "../stores/chatInputStore"
+import { useAppSettingsStore } from "../stores/appSettingsStore"
+import { useChatSoundPreferencesStore } from "../stores/chatSoundPreferencesStore"
 import type { ChatSnapshot, LocalProjectsSnapshot, SidebarChatRow, SidebarData } from "../../shared/types"
 import type { AskUserQuestionItem } from "../components/messages/types"
+import type { OpenLocalLinkTarget } from "../components/messages/shared"
 import { useAppDialog } from "../components/ui/app-dialog"
 import { processTranscriptMessages } from "../lib/parseTranscript"
+import { shouldOpenLocalFileLinkInEditor } from "../lib/pathUtils"
 import { generateUUID } from "../lib/utils"
 import { canCancelStatus, getLatestToolIds, isProcessingStatus } from "./derived"
 import { VisparkCodeSocket, type SocketStatus } from "./socket"
+import type { EditorOpenSettings, OpenExternalAction } from "../../shared/protocol"
 
 function sameRuntime(left: ChatSnapshot["runtime"] | null | undefined, right: ChatSnapshot["runtime"] | null | undefined) {
   if (left === right) return true
@@ -178,6 +183,9 @@ function mergeTranscriptEntries(olderHistoryEntries: TranscriptEntry[], recentEn
 }
 
 const NEW_CHAT_OPTIMISTIC_SCOPE = "__new_chat__"
+const LEGACY_THEME_STORAGE_KEY = "lever-theme"
+const LEGACY_CHAT_SOUND_STORAGE_KEY = "chat-sound-preferences"
+const LEGACY_TERMINAL_STORAGE_KEY = "terminal-preferences"
 
 export interface OptimisticUserPrompt {
   id: string
@@ -190,6 +198,98 @@ export interface OptimisticUserPrompt {
 interface OptimisticProcessingState {
   scopeId: string
   ackedAt: number | null
+}
+
+function readPersistedZustandState(key: string): Record<string, unknown> | null {
+  if (typeof window === "undefined") return null
+  const raw = window.localStorage.getItem(key)
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as { state?: unknown }
+    return parsed.state && typeof parsed.state === "object" && !Array.isArray(parsed.state)
+      ? parsed.state as Record<string, unknown>
+      : null
+  } catch {
+    return null
+  }
+}
+
+function readLegacyBrowserSettingsPatch(): AppSettingsPatch | null {
+  if (typeof window === "undefined") return null
+
+  const patch: AppSettingsPatch = {}
+  const theme = window.localStorage.getItem(LEGACY_THEME_STORAGE_KEY)
+  if (theme === "light" || theme === "dark" || theme === "system") {
+    patch.theme = theme
+  }
+
+  const chatSoundState = readPersistedZustandState(LEGACY_CHAT_SOUND_STORAGE_KEY)
+  if (chatSoundState?.chatSoundPreference === "never" || chatSoundState?.chatSoundPreference === "unfocused" || chatSoundState?.chatSoundPreference === "always") {
+    patch.chatSoundPreference = chatSoundState.chatSoundPreference
+  }
+  if (
+    chatSoundState?.chatSoundId === "blow"
+    || chatSoundState?.chatSoundId === "bottle"
+    || chatSoundState?.chatSoundId === "frog"
+    || chatSoundState?.chatSoundId === "funk"
+    || chatSoundState?.chatSoundId === "glass"
+    || chatSoundState?.chatSoundId === "ping"
+    || chatSoundState?.chatSoundId === "pop"
+    || chatSoundState?.chatSoundId === "purr"
+    || chatSoundState?.chatSoundId === "tink"
+  ) {
+    patch.chatSoundId = chatSoundState.chatSoundId
+  }
+
+  const terminalState = readPersistedZustandState(LEGACY_TERMINAL_STORAGE_KEY)
+  if (terminalState) {
+    patch.terminal = {}
+    if (typeof terminalState.scrollbackLines === "number") {
+      patch.terminal.scrollbackLines = terminalState.scrollbackLines
+    }
+    if (typeof terminalState.minColumnWidth === "number") {
+      patch.terminal.minColumnWidth = terminalState.minColumnWidth
+    }
+    const editorPatch: NonNullable<AppSettingsPatch["editor"]> = {}
+    if (
+      terminalState.editorPreset === "cursor"
+      || terminalState.editorPreset === "vscode"
+      || terminalState.editorPreset === "xcode"
+      || terminalState.editorPreset === "windsurf"
+      || terminalState.editorPreset === "custom"
+    ) {
+      editorPatch.preset = terminalState.editorPreset
+    }
+    if (typeof terminalState.editorCommandTemplate === "string") {
+      editorPatch.commandTemplate = terminalState.editorCommandTemplate
+    }
+    if (Object.keys(editorPatch).length > 0) {
+      patch.editor = editorPatch
+    }
+  }
+
+  patch.browserSettingsMigrated = true
+  return Object.keys(patch).length > 1 ? patch : null
+}
+
+function clearLegacyBrowserSettings() {
+  if (typeof window === "undefined") return
+  window.localStorage.removeItem(LEGACY_THEME_STORAGE_KEY)
+  window.localStorage.removeItem(LEGACY_CHAT_SOUND_STORAGE_KEY)
+  window.localStorage.removeItem(LEGACY_TERMINAL_STORAGE_KEY)
+}
+
+function syncRuntimeStoresFromAppSettings(snapshot: AppSettingsSnapshot) {
+  useAppSettingsStore.getState().setFromServer(snapshot)
+  const terminalPreferences = useTerminalPreferencesStore.getState()
+  terminalPreferences.setScrollbackLines(snapshot.terminal.scrollbackLines)
+  terminalPreferences.setMinColumnWidth(snapshot.terminal.minColumnWidth)
+  terminalPreferences.setEditorPreset(snapshot.editor.preset)
+  terminalPreferences.setEditorCommandTemplate(snapshot.editor.commandTemplate)
+
+  const chatSoundPreferences = useChatSoundPreferencesStore.getState()
+  chatSoundPreferences.setChatSoundPreference(snapshot.chatSoundPreference)
+  chatSoundPreferences.setChatSoundId(snapshot.chatSoundId)
 }
 
 function serializeAttachmentSignature(attachment: ChatAttachment) {
@@ -459,6 +559,12 @@ export interface ProjectRequest {
   title: string
 }
 
+interface LocalLinkContextMenuState {
+  target: OpenLocalLinkTarget
+  x: number
+  y: number
+}
+
 export type StartChatIntent =
   | { kind: "project_id"; projectId: string }
   | { kind: "local_path"; localPath: string }
@@ -532,10 +638,12 @@ export interface VisparkCodeState {
   navbarLocalPath?: string
   editorLabel: string
   hasSelectedProject: boolean
+  localLinkContextMenu: LocalLinkContextMenuState | null
   openSidebar: () => void
   closeSidebar: () => void
   collapseSidebar: () => void
   expandSidebar: () => void
+  closeLocalLinkContextMenu: () => void
   updateScrollState: () => void
   scrollToBottom: () => void
   loadOlderHistory: () => Promise<void>
@@ -545,20 +653,25 @@ export interface VisparkCodeState {
   handlePickDirectory: (title?: string) => Promise<string | null>
   handleCheckForUpdates: (options?: { force?: boolean }) => Promise<void>
   handleInstallUpdate: () => Promise<void>
+  handleReadAppSettings: () => Promise<void>
+  handleWriteAppSettings: (patch: AppSettingsPatch) => Promise<void>
   handleSignOut: () => Promise<void>
   handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; attachments?: ChatAttachment[] }) => Promise<void>
   handleSteerQueuedMessage: (queuedMessageId: string) => Promise<void>
   handleRemoveQueuedMessage: (queuedMessageId: string) => Promise<void>
   handleCancel: () => Promise<void>
   handleStopDraining: () => Promise<void>
+  handleRenameChat: (chat: SidebarChatRow) => Promise<void>
+  handleArchiveChat: (chat: SidebarChatRow) => Promise<void>
+  handleOpenArchivedChat: (chatId: string) => Promise<void>
   handleDeleteChat: (chat: SidebarChatRow) => Promise<void>
   handleForkChat: (chat: SidebarChatRow) => Promise<void>
-  handleRemoveProject: (projectId: string) => Promise<void>
+  handleHideProject: (projectId: string) => Promise<void>
   handleReorderProjectGroups: (projectIds: string[]) => Promise<void>
   handleCopyPath: (localPath: string) => Promise<void>
-  handleOpenExternal: (action: "open_finder" | "open_terminal" | "open_editor") => Promise<void>
+  handleOpenExternal: (action: OpenExternalAction, editor?: EditorOpenSettings) => Promise<void>
   handleOpenExternalPath: (action: "open_finder" | "open_editor", localPath: string) => Promise<void>
-  handleOpenLocalLink: (target: { path: string; line?: number; column?: number }) => Promise<void>
+  handleOpenLocalLink: (target: OpenLocalLinkTarget, action?: OpenExternalAction, editor?: EditorOpenSettings) => Promise<void>
   handleCompose: () => void
   handleAskUserQuestion: (
     toolUseId: string,
@@ -603,6 +716,7 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
   const [optimisticSidebarProjectOrder, setOptimisticSidebarProjectOrder] = useState<string[]>([])
   const [startingLocalPath, setStartingLocalPath] = useState<string | null>(null)
   const [pendingChatId, setPendingChatId] = useState<string | null>(null)
+  const [localLinkContextMenu, setLocalLinkContextMenu] = useState<LocalLinkContextMenuState | null>(null)
   const [optimisticUserPrompts, setOptimisticUserPrompts] = useState<OptimisticUserPrompt[]>([])
   const [optimisticProcessing, setOptimisticProcessing] = useState<OptimisticProcessingState | null>(null)
   const [focusEpoch, setFocusEpoch] = useState(0)
@@ -759,6 +873,59 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     })
   }, [socket])
 
+  useEffect(() => {
+    return socket.subscribe<AppSettingsSnapshot>({ type: "app-settings" }, (snapshot) => {
+      setAppSettings(snapshot)
+      syncRuntimeStoresFromAppSettings(snapshot)
+      setSettingsReady(true)
+      setCommandError(null)
+    })
+  }, [socket])
+
+  const handleReadAppSettings = useCallback(async () => {
+    try {
+      useAppSettingsStore.getState().setHydrationStatus("loading")
+      const snapshot = await socket.command<AppSettingsSnapshot>({ type: "settings.readAppSettings" })
+      setAppSettings(snapshot)
+      syncRuntimeStoresFromAppSettings(snapshot)
+      setCommandError(null)
+    } catch (error) {
+      useAppSettingsStore.getState().setHydrationStatus("error")
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }, [socket])
+
+  const handleWriteAppSettings = useCallback(async (patch: AppSettingsPatch) => {
+    try {
+      useAppSettingsStore.getState().applyOptimisticPatch(patch)
+      const snapshot = await socket.command<AppSettingsSnapshot>({
+        type: "settings.writeAppSettingsPatch",
+        patch,
+      })
+      setAppSettings(snapshot)
+      syncRuntimeStoresFromAppSettings(snapshot)
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+      await handleReadAppSettings()
+      throw error
+    }
+  }, [handleReadAppSettings, socket])
+
+  useEffect(() => {
+    if (connectionStatus !== "connected") return
+    void handleReadAppSettings()
+  }, [connectionStatus, handleReadAppSettings])
+
+  useEffect(() => {
+    if (connectionStatus !== "connected") return
+    if (appSettings?.browserSettingsMigrated !== false) return
+    const patch = readLegacyBrowserSettingsPatch()
+    if (!patch) return
+    void handleWriteAppSettings(patch)
+      .then(clearLegacyBrowserSettings)
+      .catch(() => undefined)
+  }, [appSettings?.browserSettingsMigrated, connectionStatus, handleWriteAppSettings])
   useEffect(() => {
     function handleFocusSignal() {
       setFocusEpoch((value) => value + 1)
@@ -1521,6 +1688,21 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     }
   }, [activeChatId, socket])
 
+  const handleRenameChat = useCallback(async (chat: SidebarChatRow) => {
+    const title = await dialog.prompt({
+      title: "Rename Chat",
+      initialValue: chat.title,
+      confirmLabel: "Rename",
+    })
+    if (!title || title === chat.title) return
+    try {
+      await socket.command({ type: "chat.rename", chatId: chat.chatId, title })
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }, [dialog, socket])
+
   const handleDeleteChat = useCallback(async (chat: SidebarChatRow) => {
     const confirmed = await dialog.confirm({
       title: "Delete Chat",
@@ -1550,18 +1732,32 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     }
   }, [navigate, socket])
 
-  const handleRemoveProject = useCallback(async (projectId: string) => {
-    const project = sidebarData.projectGroups.find((group) => group.groupKey === projectId)
-    if (!project) return
-    const projectName = project.localPath.split("/").filter(Boolean).pop() ?? project.localPath
-    const confirmed = await dialog.confirm({
-      title: "Remove",
-      description: `Remove "${projectName}" from the sidebar? Existing chats will be removed from ${APP_NAME}.`,
-      confirmLabel: "Remove",
-      confirmVariant: "destructive",
-    })
-    if (!confirmed) return
+  const handleArchiveChat = useCallback(async (chat: SidebarChatRow) => {
+    try {
+      await socket.command({ type: "chat.archive", chatId: chat.chatId })
+      if (chat.chatId === activeChatId) {
+        const nextChatId = getNewestRemainingChatId(sidebarData.projectGroups, chat.chatId)
+        navigate(nextChatId ? `/chat/${nextChatId}` : "/")
+      }
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }, [activeChatId, navigate, sidebarData.projectGroups, socket])
 
+  const handleOpenArchivedChat = useCallback(async (chatId: string) => {
+    try {
+      setPendingChatId(chatId)
+      await socket.command({ type: "chat.unarchive", chatId })
+      navigate(`/chat/${chatId}`)
+      setCommandError(null)
+    } catch (error) {
+      setPendingChatId(null)
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }, [navigate, socket])
+
+  const handleHideProject = useCallback(async (projectId: string) => {
     try {
       await socket.command({ type: "project.remove", projectId })
       useTerminalLayoutStore.getState().clearProject(projectId)
@@ -1573,7 +1769,7 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
     }
-  }, [dialog, navigate, runtime?.projectId, sidebarData.projectGroups, socket])
+  }, [navigate, runtime?.projectId, socket])
 
   const handleReorderProjectGroups = useCallback(async (projectIds: string[]) => {
     setOptimisticSidebarProjectOrder(projectIds)
@@ -1591,10 +1787,11 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
   }, [socket])
 
   const openExternal = useCallback(async (command: {
-    action: "open_finder" | "open_terminal" | "open_editor"
+    action: OpenExternalAction
     localPath: string
     line?: number
     column?: number
+    editor?: EditorOpenSettings
   }) => {
     const preferences = useTerminalPreferencesStore.getState()
     setCommandError(null)
@@ -1602,7 +1799,7 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
       type: "system.openExternal",
       ...command,
       editor: command.action === "open_editor"
-        ? {
+        ? command.editor ?? {
             preset: preferences.editorPreset,
             commandTemplate: preferences.editorCommandTemplate,
           }
@@ -1610,13 +1807,14 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     })
   }, [socket])
 
-  const handleOpenExternal = useCallback(async (action: "open_finder" | "open_terminal" | "open_editor") => {
+  const handleOpenExternal = useCallback(async (action: OpenExternalAction, editor?: EditorOpenSettings) => {
     const localPath = runtime?.localPath ?? localProjects?.projects[0]?.localPath ?? sidebarData.projectGroups[0]?.localPath
     if (!localPath) return
     try {
       await openExternal({
         action,
         localPath,
+        editor,
       })
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
@@ -1635,13 +1833,37 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     }
   }, [])
 
-  const handleOpenLocalLink = useCallback(async (target: { path: string; line?: number; column?: number }) => {
+  const closeLocalLinkContextMenu = useCallback(() => {
+    setLocalLinkContextMenu(null)
+  }, [])
+
+  const handleOpenLocalLink = useCallback(async (
+    target: OpenLocalLinkTarget,
+    action?: OpenExternalAction,
+    editor?: EditorOpenSettings,
+  ) => {
+    if (target.trigger === "contextmenu" && !action) {
+      setLocalLinkContextMenu({
+        target,
+        x: target.clientX ?? 0,
+        y: target.clientY ?? 0,
+      })
+      return
+    }
+
     try {
+      setLocalLinkContextMenu(null)
+      const resolvedAction = action ?? (
+        shouldOpenLocalFileLinkInEditor(target.path)
+          ? "open_editor"
+          : "open_default"
+      )
       await openExternal({
-        action: "open_editor",
+        action: resolvedAction,
         localPath: target.path,
         line: target.line,
         column: target.column,
+        editor,
       })
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
@@ -1754,10 +1976,12 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     navbarLocalPath,
     editorLabel,
     hasSelectedProject,
+    localLinkContextMenu,
     openSidebar,
     closeSidebar,
     collapseSidebar,
     expandSidebar,
+    closeLocalLinkContextMenu,
     updateScrollState,
     scrollToBottom,
     loadOlderHistory,
@@ -1767,15 +1991,20 @@ export function useVisparkCodeState(activeChatId: string | null): VisparkCodeSta
     handlePickDirectory,
     handleCheckForUpdates,
     handleInstallUpdate,
+    handleReadAppSettings,
+    handleWriteAppSettings,
     handleSignOut,
     handleSend,
     handleSteerQueuedMessage,
     handleRemoveQueuedMessage,
     handleCancel,
     handleStopDraining,
+    handleRenameChat,
+    handleArchiveChat,
+    handleOpenArchivedChat,
     handleDeleteChat,
     handleForkChat,
-    handleRemoveProject,
+    handleHideProject,
     handleReorderProjectGroups,
     handleCopyPath,
     handleOpenExternal,

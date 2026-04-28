@@ -193,11 +193,12 @@ function VisparkCodeLayout() {
     const burstCount = getChatSoundBurstCount(previousSidebarDataRef.current, state.sidebarData)
     previousSidebarDataRef.current = state.sidebarData
 
+    if (!state.settingsReady) return
     if (burstCount <= 0) return
     if (!shouldPlayChatSound(chatSoundPreference)) return
 
     void playChatNotificationSound(chatSoundId, burstCount).catch(() => undefined)
-  }, [chatSoundId, chatSoundPreference, state.sidebarData])
+  }, [chatSoundId, chatSoundPreference, state.settingsReady, state.sidebarData])
 
   return (
     <div className="flex h-[100dvh] min-h-[100dvh] overflow-hidden">
@@ -219,6 +220,15 @@ function VisparkCodeLayout() {
         onForkChat={(chat) => {
           void state.handleForkChat(chat)
         }}
+        onRenameChat={(chat) => {
+          void state.handleRenameChat(chat)
+        }}
+        onArchiveChat={(chat) => {
+          void state.handleArchiveChat(chat)
+        }}
+        onOpenArchivedChat={(chatId) => {
+          void state.handleOpenArchivedChat(chatId)
+        }}
         onDeleteChat={(chat) => {
           void state.handleDeleteChat(chat)
         }}
@@ -228,8 +238,8 @@ function VisparkCodeLayout() {
         onOpenExternalPath={(action, localPath) => {
           void state.handleOpenExternalPath(action, localPath)
         }}
-        onRemoveProject={(projectId) => {
-          void state.handleRemoveProject(projectId)
+        onHideProject={(projectId) => {
+          void state.handleHideProject(projectId)
         }}
         onReorderProjectGroups={(projectIds) => {
           void state.handleReorderProjectGroups(projectIds)

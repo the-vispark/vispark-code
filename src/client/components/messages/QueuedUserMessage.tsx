@@ -29,15 +29,29 @@ export function QueuedUserMessage({ message, onRemove, onSendNow }: QueuedUserMe
           </div>
         ) : null}
         {message.content ? (
-          <div className="relative">
-            <div className="rounded-[20px] border border-dashed border-border bg-transparent px-3.5 py-1.5 prose prose-sm prose-invert text-left text-primary [&_p]:whitespace-pre-line">
-              <Markdown remarkPlugins={[remarkGfm]} components={createMarkdownComponents()}>{message.content}</Markdown>
+          <div className="group relative">
+            <div className="grid grid-cols-[1fr_auto] items-end gap-2.5 rounded-[20px] border border-dashed border-border bg-transparent py-1.5 pl-3.5 pr-1.5 prose prose-sm prose-invert text-left text-primary [&_p]:whitespace-pre-line">
+              <div>
+                <Markdown remarkPlugins={[remarkGfm]} components={createMarkdownComponents()}>
+                  {message.content}
+                </Markdown>
+              </div>
+              <Button
+                type="button"
+                variant="default"
+                size="none"
+                className="size-[24px] rounded-full border border-primary/10 bg-muted text-muted-foreground group-hover:!text-primary hover:bg-muted/60"
+                onClick={onSendNow}
+                title="Send queued message now"
+              >
+                <ArrowUp className="size-3.5" />
+              </Button>
             </div>
             <Button
               type="button"
               variant="none"
               size="none"
-              className="absolute left-0 top-0 !p-0.5 -translate-x-[28%] -translate-y-[28%] rounded-full border bg-background text-muted-foreground hover:text-foreground"
+              className="absolute top-0 left-0 gap-0.5 rounded-full border bg-background !p-0.5 text-xs font-medium text-muted-foreground opacity-0 -translate-x-[28%] -translate-y-[28%] scale-[0.1] group-hover:scale-100 group-hover:opacity-100 hover:text-foreground"
               onClick={onRemove}
               title="Remove queued message"
             >
@@ -45,18 +59,6 @@ export function QueuedUserMessage({ message, onRemove, onSendNow }: QueuedUserMe
             </Button>
           </div>
         ) : null}
-        <div className="flex items-center gap-1 pr-2 text-xs text-muted-foreground">
-          <Button
-            type="button"
-            variant="none"
-            size="none"
-            className="inline-flex h-auto items-center gap-0.5 p-0 text-xs font-medium text-muted-foreground hover:text-foreground"
-            onClick={onSendNow}
-          >
-            <ArrowUp className="size-3" />
-            Send Now
-          </Button>
-        </div>
       </div>
     </div>
   )

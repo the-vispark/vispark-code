@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { measureElement, useVirtualizer } from "@tanstack/react-virtual"
 import { ArrowDown, Upload } from "lucide-react"
 import { useOutletContext } from "react-router-dom"
+import type { EditorOpenSettings, OpenExternalAction } from "../../shared/protocol"
 import type {
   AgentProvider,
   BranchActionFailure,
@@ -27,6 +28,7 @@ import { DrainingIndicator } from "../components/messages/DrainingIndicator"
 import { ProcessingMessage } from "../components/messages/ProcessingMessage"
 import { QueuedUserMessage } from "../components/messages/QueuedUserMessage"
 import { OpenLocalLinkProvider } from "../components/messages/shared"
+import { OpenAppIcon, getOpenAppItems, getOpenAppLabel, openAppValue, type OpenAppValue } from "../components/open-external-menu"
 import { AnimatedShinyText } from "../components/ui/animated-shiny-text"
 import { useAppDialog } from "../components/ui/app-dialog"
 import { Card, CardContent } from "../components/ui/card"
@@ -86,6 +88,16 @@ export function getTranscriptTocLabel(content: string) {
     .find((line) => line.length > 0)
 
   return firstLine ?? "(attachment only)"
+}
+
+function getLocalLinkMenuActionLabel(value: OpenAppValue, isMac: boolean) {
+  if (value === "finder") {
+    return isMac ? "Reveal in Finder" : "Reveal in Folder"
+  }
+  if (value === "default") {
+    return "Open in Default App"
+  }
+  return `Open in ${getOpenAppLabel(value, isMac)}`
 }
 
 export function createTranscriptTocItems(messages: HydratedTranscriptMessage[]): TranscriptTocItem[] {
@@ -722,7 +734,17 @@ export function ChatPage() {
   const setRightSidebarSize = useRightSidebarStore((store) => store.setSize)
   const scrollback = useTerminalPreferencesStore((store) => store.scrollbackLines)
   const minColumnWidth = useTerminalPreferencesStore((store) => store.minColumnWidth)
+  const editorPreset = useTerminalPreferencesStore((store) => store.editorPreset)
+  const editorCommandTemplate = useTerminalPreferencesStore((store) => store.editorCommandTemplate)
   const showTranscriptToc = useChatPreferencesStore((store) => store.showTranscriptToc)
+  const isMac = (state.localProjects?.machine.platform ?? "darwin") === "darwin"
+  const localLinkContextMenuItems = useMemo(() => getOpenAppItems({
+    editorPreset,
+    isMac,
+    includeFinder: true,
+    includePreview: true,
+    includeDefault: true,
+  }), [editorPreset, isMac])
   const transcriptTocItems = useMemo(() => createTranscriptTocItems(state.messages), [state.messages])
   const shouldShowTranscriptToc = shouldShowTranscriptTocPanel({
     enabled: showTranscriptToc,
@@ -847,7 +869,7 @@ export function ChatPage() {
   const handleOpenDiffFile = useCallback((filePath: string) => {
     const projectPath = projectPathRef.current
     const resolvedPath = resolveDiffFilePath(projectPath, filePath)
-    void state.handleOpenLocalLink({ path: resolvedPath })
+    void state.handleOpenLocalLink({ path: resolvedPath }, "open_editor")
   }, [state.handleOpenLocalLink])
 
   const handleCopyDiffFilePath = useCallback((filePath: string) => {
@@ -1300,8 +1322,8 @@ export function ChatPage() {
   const handleCancel = useCallback(() => {
     void state.handleCancel()
   }, [state.handleCancel])
-  const handleOpenExternal = useCallback((action: "open_finder" | "open_editor" | "open_terminal") => {
-    void state.handleOpenExternal(action)
+  const handleOpenExternal = useCallback((action: OpenExternalAction, editor?: EditorOpenSettings) => {
+    void state.handleOpenExternal(action, editor)
   }, [state.handleOpenExternal])
   const handleRemoveTerminal = useCallback((currentProjectId: string, terminalId: string) => {
     void state.socket.command({ type: "terminal.close", terminalId }).catch(() => {})
@@ -1596,6 +1618,23 @@ export function ChatPage() {
     enqueueDroppedFiles([...event.dataTransfer.files])
   }, [state.hasSelectedProject])
 
+  useEffect(() => {
+    if (!state.localLinkContextMenu) return
+
+    function handleDismiss(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        state.closeLocalLinkContextMenu()
+      }
+    }
+
+    window.addEventListener("keydown", handleDismiss)
+    window.addEventListener("resize", state.closeLocalLinkContextMenu)
+    return () => {
+      window.removeEventListener("keydown", handleDismiss)
+      window.removeEventListener("resize", state.closeLocalLinkContextMenu)
+    }
+  }, [state.closeLocalLinkContextMenu, state.localLinkContextMenu])
+
   const chatCard = (
     <Card
       ref={chatCardRef}
@@ -1617,7 +1656,9 @@ export function ChatPage() {
           rightSidebarVisible={showRightSidebar}
           onToggleRightSidebar={projectId ? handleToggleRightSidebar : undefined}
           onOpenExternal={handleOpenExternal}
-          editorLabel={state.editorLabel}
+          editorPreset={editorPreset}
+          editorCommandTemplate={editorCommandTemplate}
+          platform={state.localProjects?.machine.platform}
           finderShortcut={resolvedKeybindings.bindings.openInFinder}
           editorShortcut={resolvedKeybindings.bindings.openInEditor}
           terminalShortcut={resolvedKeybindings.bindings.toggleEmbeddedTerminal}
@@ -1679,6 +1720,49 @@ export function ChatPage() {
                   </button>
                 ))}
               </div>
+            </div>
+          </div>
+        ) : null}
+
+        {state.localLinkContextMenu ? (
+          <div
+            className="fixed inset-0 z-50"
+            onClick={state.closeLocalLinkContextMenu}
+            onContextMenu={(event) => {
+              event.preventDefault()
+              state.closeLocalLinkContextMenu()
+            }}
+          >
+            <div
+              className="absolute min-w-[230px] rounded-xl border border-border bg-background p-1 shadow-lg"
+              style={{
+                left: Math.max(12, Math.min(state.localLinkContextMenu.x, window.innerWidth - 242)),
+                top: Math.max(12, Math.min(state.localLinkContextMenu.y, window.innerHeight - (localLinkContextMenuItems.length * 42 + 20))),
+              }}
+              onClick={(event) => event.stopPropagation()}
+              onContextMenu={(event) => event.preventDefault()}
+            >
+              {localLinkContextMenuItems.map((item) => (
+                <button
+                  key={item.value}
+                  type="button"
+                  className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-foreground transition-colors hover:bg-muted"
+                  onClick={() => {
+                    const target = state.localLinkContextMenu?.target
+                    if (!target) return
+                    openAppValue({
+                      value: item.value,
+                      editorCommandTemplate,
+                      onOpenExternal: (action, editor) => {
+                        void state.handleOpenLocalLink(target, action, editor)
+                      },
+                    })
+                  }}
+                >
+                  <OpenAppIcon value={item.value} isMac={isMac} className="h-5 w-5 shrink-0" />
+                  <span>{getLocalLinkMenuActionLabel(item.value, isMac)}</span>
+                </button>
+              ))}
             </div>
           </div>
         ) : null}

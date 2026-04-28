@@ -1,5 +1,6 @@
 import type {
   AgentProvider,
+  AppSettingsPatch,
   AppSettingsSnapshot,
   ChatAttachment,
   ChatHistoryPage,
@@ -7,6 +8,7 @@ import type {
   FileTreeDirectoryPage,
   FileTreeSnapshot,
   DiffCommitMode,
+  EditorPreset,
   KeybindingsSnapshot,
   LocalProjectsSnapshot,
   ModelOptions,
@@ -14,7 +16,7 @@ import type {
   UpdateSnapshot,
 } from "./types"
 
-export type EditorPreset = "cursor" | "vscode" | "windsurf" | "custom"
+export type { EditorPreset } from "./types"
 
 export interface EditorOpenSettings {
   preset: EditorPreset
@@ -25,6 +27,7 @@ export type SubscriptionTopic =
   | { type: "sidebar" }
   | { type: "local-projects" }
   | { type: "settings" }
+  | { type: "app-settings" }
   | { type: "file-tree"; projectId: string }
   | { type: "update" }
   | { type: "keybindings" }
@@ -63,6 +66,8 @@ export type ClientCommand =
   | { type: "system.ping" }
   | { type: "settings.get" }
   | { type: "settings.updateVision"; visionApiKey: string }
+  | { type: "settings.readAppSettings" }
+  | { type: "settings.writeAppSettingsPatch"; patch: AppSettingsPatch }
   | { type: "settings.resetAll" }
   | { type: "update.check"; force?: boolean }
   | { type: "update.install" }
@@ -72,7 +77,7 @@ export type ClientCommand =
   | {
       type: "system.openExternal"
       localPath: string
-      action: "open_finder" | "open_terminal" | "open_editor"
+      action: "open_finder" | "open_terminal" | "open_editor" | "open_preview" | "open_default"
       line?: number
       column?: number
       editor?: EditorOpenSettings
@@ -80,6 +85,8 @@ export type ClientCommand =
   | { type: "chat.create"; projectId: string }
   | { type: "chat.fork"; chatId: string }
   | { type: "chat.rename"; chatId: string; title: string }
+  | { type: "chat.archive"; chatId: string }
+  | { type: "chat.unarchive"; chatId: string }
   | { type: "chat.delete"; chatId: string }
   | { type: "chat.setDraftProtection"; chatIds: string[] }
   | { type: "chat.markRead"; chatId: string }
@@ -177,6 +184,7 @@ export type ServerSnapshot =
   | { type: "sidebar"; data: SidebarData }
   | { type: "local-projects"; data: LocalProjectsSnapshot }
   | { type: "settings"; data: AppSettingsSnapshot }
+  | { type: "app-settings"; data: AppSettingsSnapshot }
   | { type: "file-tree"; data: FileTreeSnapshot | null }
   | { type: "update"; data: UpdateSnapshot }
   | { type: "keybindings"; data: KeybindingsSnapshot }
@@ -190,6 +198,7 @@ export type ServerEnvelope =
   | { v: 1; type: "error"; id?: string; message: string }
 
 export type FileTreeReadDirectoryResult = FileTreeDirectoryPage
+export type OpenExternalAction = Extract<ClientCommand, { type: "system.openExternal" }>["action"]
 
 export function isClientEnvelope(value: unknown): value is ClientEnvelope {
   if (!value || typeof value !== "object") return false

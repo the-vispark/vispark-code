@@ -14,10 +14,13 @@ import { getKeybindingsFilePathDisplay } from "../../shared/branding"
 import {
   type AppSettingsSnapshot,
   DEFAULT_KEYBINDINGS,
+  type ChatSoundId,
+  type ChatSoundPreference,
   type KeybindingAction,
   type UpdateSnapshot,
 } from "../../shared/types"
 import { markdownComponents } from "../components/messages/shared"
+import { EditorIcon } from "../components/editor-icons"
 import { buttonVariants, Button } from "../components/ui/button"
 import { Input } from "../components/ui/input"
 import type { EditorPreset } from "../../shared/protocol"
@@ -34,6 +37,7 @@ import {
   MAX_TERMINAL_SCROLLBACK,
   MIN_TERMINAL_MIN_COLUMN_WIDTH,
   MIN_TERMINAL_SCROLLBACK,
+  getDefaultEditorCommandTemplate,
   useTerminalPreferencesStore,
 } from "../stores/terminalPreferencesStore"
 import { useChatPreferencesStore } from "../stores/chatPreferencesStore"
@@ -49,6 +53,7 @@ const themeOptions = [
 const editorOptions: { value: EditorPreset; label: string }[] = [
   { value: "cursor", label: "Cursor" },
   { value: "vscode", label: "VS Code" },
+  { value: "xcode", label: "Xcode" },
   { value: "windsurf", label: "Windsurf" },
   { value: "custom", label: "Custom" },
 ]
@@ -434,6 +439,7 @@ export function SettingsPage() {
   const [resetMessage, setResetMessage] = useState<string | null>(null)
   const [keybindingDrafts, setKeybindingDrafts] = useState<Record<string, string>>({})
   const [keybindingsError, setKeybindingsError] = useState<string | null>(null)
+  const [appSettingsError, setAppSettingsError] = useState<string | null>(null)
 
   useEffect(() => {
     setScrollbackDraft(String(scrollbackLines))
@@ -487,6 +493,9 @@ export function SettingsPage() {
       return
     }
     setScrollbackLines(nextValue)
+    void state.handleWriteAppSettings({ terminal: { scrollbackLines: nextValue } }).catch((error) => {
+      setAppSettingsError(error instanceof Error ? error.message : "Unable to save terminal settings.")
+    })
   }
 
   function commitMinColumnWidth() {
@@ -496,6 +505,9 @@ export function SettingsPage() {
       return
     }
     setMinColumnWidth(nextValue)
+    void state.handleWriteAppSettings({ terminal: { minColumnWidth: nextValue } }).catch((error) => {
+      setAppSettingsError(error instanceof Error ? error.message : "Unable to save terminal settings.")
+    })
   }
 
   function handleNumberInputKeyDown(event: KeyboardEvent<HTMLInputElement>, commit: () => void) {
@@ -512,10 +524,61 @@ export function SettingsPage() {
 
   function commitEditorCommand() {
     setEditorCommandTemplate(editorCommandDraft)
+    void state.handleWriteAppSettings({ editor: { commandTemplate: editorCommandDraft } }).catch((error) => {
+      setAppSettingsError(error instanceof Error ? error.message : "Unable to save editor settings.")
+    })
   }
 
   function previewChatSound(soundId = chatSoundId) {
     void playChatNotificationSound(soundId, 1).catch(() => undefined)
+  }
+
+  function handleThemeChange(nextTheme: ThemePreference) {
+    setTheme(nextTheme)
+    void state.handleWriteAppSettings({ theme: nextTheme }).catch((error) => {
+      setAppSettingsError(error instanceof Error ? error.message : "Unable to save theme settings.")
+    })
+  }
+
+  function handleEditorPresetChange(nextPreset: EditorPreset) {
+    setEditorPreset(nextPreset)
+    const commandTemplate = nextPreset === "custom"
+      ? editorCommandTemplate
+      : getDefaultEditorCommandTemplate(nextPreset)
+    if (nextPreset !== "custom") {
+      setEditorCommandTemplate(commandTemplate)
+      setEditorCommandDraft(commandTemplate)
+    }
+    void state.handleWriteAppSettings({
+      editor: {
+        preset: nextPreset,
+        commandTemplate,
+      },
+    }).catch((error) => {
+      setAppSettingsError(error instanceof Error ? error.message : "Unable to save editor settings.")
+    })
+  }
+
+  function handleChatSoundPreferenceChange(nextValue: ChatSoundPreference) {
+    const shouldPreview = shouldPreviewChatSoundChange(chatSoundPreference, nextValue) && nextValue !== "never"
+    setChatSoundPreference(nextValue)
+    void state.handleWriteAppSettings({ chatSoundPreference: nextValue }).catch((error) => {
+      setAppSettingsError(error instanceof Error ? error.message : "Unable to save chat sound settings.")
+    })
+    if (shouldPreview) {
+      previewChatSound()
+    }
+  }
+
+  function handleChatSoundIdChange(nextValue: ChatSoundId) {
+    const shouldPreview = shouldPreviewChatSoundChange(chatSoundId, nextValue) && chatSoundPreference !== "never"
+    setChatSoundId(nextValue)
+    void state.handleWriteAppSettings({ chatSoundId: nextValue }).catch((error) => {
+      setAppSettingsError(error instanceof Error ? error.message : "Unable to save chat sound settings.")
+    })
+    if (shouldPreview) {
+      previewChatSound(nextValue)
+    }
   }
 
   async function saveVisionApiKey() {
@@ -618,6 +681,11 @@ export function SettingsPage() {
                 <div className="mt-1 text-sm text-muted-foreground">
                   Manage appearance, editor behavior, and embedded terminal defaults.
                 </div>
+                {appSettingsError ? (
+                  <div className="mt-4 rounded-xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+                    {appSettingsError}
+                  </div>
+                ) : null}
               </div>
 
               <div className="space-y-4">
@@ -752,7 +820,7 @@ export function SettingsPage() {
                 >
                   <SegmentedControl
                     value={theme}
-                    onValueChange={setTheme}
+                    onValueChange={(value) => handleThemeChange(value as ThemePreference)}
                     options={themeOptions}
                     size="sm"
                   />
@@ -791,14 +859,7 @@ export function SettingsPage() {
                     <div className="flex flex-wrap items-center gap-2 md:justify-end">
                       <SegmentedControl
                         value={chatSoundPreference}
-                        onValueChange={(value) => {
-                          const nextValue = value as typeof chatSoundPreference
-                          const shouldPreview = shouldPreviewChatSoundChange(chatSoundPreference, nextValue) && nextValue !== "never"
-                          setChatSoundPreference(nextValue)
-                          if (shouldPreview) {
-                            previewChatSound()
-                          }
-                        }}
+                        onValueChange={(value) => handleChatSoundPreferenceChange(value as ChatSoundPreference)}
                         options={chatSoundPreferenceOptions}
                         size="sm"
                       />
@@ -806,14 +867,7 @@ export function SettingsPage() {
                     <div className="flex flex-wrap items-center gap-2 md:justify-end">
                       <select
                         value={chatSoundId}
-                        onChange={(event) => {
-                          const nextValue = event.target.value as typeof chatSoundId
-                          const shouldPreview = shouldPreviewChatSoundChange(chatSoundId, nextValue) && chatSoundPreference !== "never"
-                          setChatSoundId(nextValue)
-                          if (shouldPreview) {
-                            previewChatSound(nextValue)
-                          }
-                        }}
+                        onChange={(event) => handleChatSoundIdChange(event.target.value as ChatSoundId)}
                         className="min-w-[160px] rounded-lg border border-border bg-background px-3 py-2 pr-10 text-sm text-foreground outline-none"
                       >
                         {CHAT_SOUND_OPTIONS.map((option) => (
@@ -840,17 +894,20 @@ export function SettingsPage() {
                   description="Used by the navbar code button and local file links in chat"
                   alignStart
                 >
-                  <select
-                    value={editorPreset}
-                    onChange={(event) => setEditorPreset(event.target.value as EditorPreset)}
-                    className="min-w-[180px] rounded-lg border border-border bg-background px-3 py-2 pr-12 text-sm text-foreground outline-none"
-                  >
-                    {editorOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="flex items-center gap-3">
+                    <EditorIcon preset={editorPreset} className="h-5 w-5 shrink-0" />
+                    <select
+                      value={editorPreset}
+                      onChange={(event) => handleEditorPresetChange(event.target.value as EditorPreset)}
+                      className="min-w-[180px] rounded-lg border border-border bg-background px-3 py-2 pr-12 text-sm text-foreground outline-none"
+                    >
+                      {editorOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </SettingsRow>
 
                 {editorPreset === "custom" ? (
