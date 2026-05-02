@@ -12,6 +12,7 @@ import {
   resetSettingsPageChangelogCache,
   setCachedChangelog,
   shouldPreviewChatSoundChange,
+  SkillsSection,
 } from "./SettingsPage"
 import { SettingsHeaderButton } from "../components/ui/settings-header-button"
 
@@ -118,6 +119,25 @@ describe("getKeybindingsSubtitle", () => {
     expect(getKeybindingsSubtitle("~/.vispark-code-dev/keybindings.json")).toBe(
       "Edit global app shortcuts stored in ~/.vispark-code-dev/keybindings.json."
     )
+  })
+})
+
+describe("SkillsSection", () => {
+  test("renders installed and discover sections", () => {
+    const html = renderToStaticMarkup(
+      <SkillsSection
+        state={{
+          connectionStatus: "connected",
+          socket: {
+            command: async () => ({ skills: [] }),
+          } as never,
+        }}
+      />
+    )
+
+    expect(html).toContain("Installed")
+    expect(html).toContain("Discover")
+    expect(html).toContain("Search skills")
   })
 })
 

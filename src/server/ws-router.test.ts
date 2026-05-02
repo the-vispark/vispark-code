@@ -1,8 +1,21 @@
 import { describe, expect, test } from "bun:test"
+import { mkdir, mkdtemp, readlink, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import type { KeybindingsSnapshot, UpdateSnapshot } from "../shared/types"
 import { PROTOCOL_VERSION } from "../shared/types"
 import { createEmptyState } from "./events"
-import { createWsRouter } from "./ws-router"
+import {
+  assertSafeSkillId,
+  assertSafeSkillSource,
+  buildInstallSkillCommand,
+  buildUninstallSkillCommand,
+  createWsRouter,
+  getGlobalSkillsRoot,
+  linkSkillIntoVision,
+  listInstalledSkills,
+  parseInstalledSkillsLock,
+} from "./ws-router"
 
 class FakeWebSocket {
   readonly sent: unknown[] = []
@@ -38,6 +51,121 @@ const DEFAULT_UPDATE_SNAPSHOT: UpdateSnapshot = {
   installAction: "restart",
   reloadRequestedAt: null,
 }
+
+describe("skills helpers", () => {
+  test("parses installed global skills from a lock payload", () => {
+    const snapshot = parseInstalledSkillsLock({
+      version: 1,
+      skills: {
+        zeta: {
+          source: "owner/zeta",
+          sourceType: "github",
+          sourceUrl: "https://github.com/owner/zeta",
+          skillPath: "skills/zeta/SKILL.md",
+          installedAt: "2026-05-01T01:00:00.000Z",
+          updatedAt: "2026-05-01T02:00:00.000Z",
+          pluginName: "zeta-plugin",
+        },
+        alpha: {
+          source: "owner/alpha",
+          sourceType: "github",
+        },
+        ignored: "not an object",
+      },
+    }, "/tmp/.skill-lock.json")
+
+    expect(snapshot.lockFilePath).toBe("/tmp/.skill-lock.json")
+    expect(snapshot.skills.map((skill) => skill.name)).toEqual(["alpha", "zeta"])
+    expect(snapshot.skills[0]).toMatchObject({
+      name: "alpha",
+      source: "owner/alpha",
+      sourceType: "github",
+      sourceUrl: "",
+      installedAt: "",
+      updatedAt: "",
+    })
+    expect(snapshot.skills[1]).toMatchObject({
+      name: "zeta",
+      source: "owner/zeta",
+      skillPath: "skills/zeta/SKILL.md",
+      pluginName: "zeta-plugin",
+    })
+  })
+
+  test("returns an empty installed skills snapshot when the lock file is missing or invalid", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "vispark-skills-"))
+    try {
+      const missingPath = path.join(dir, "missing.json")
+      expect(await listInstalledSkills(missingPath)).toEqual({
+        lockFilePath: missingPath,
+        skills: [],
+      })
+
+      const invalidPath = path.join(dir, ".skill-lock.json")
+      await writeFile(invalidPath, "{", "utf8")
+      expect(await listInstalledSkills(invalidPath)).toEqual({
+        lockFilePath: invalidPath,
+        skills: [],
+      })
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("validates skill source and id before building commands", () => {
+    expect(assertSafeSkillSource(" owner/repo ")).toBe("owner/repo")
+    expect(assertSafeSkillId(" my-skill_1 ")).toBe("my-skill_1")
+    expect(() => assertSafeSkillSource("https://github.com/owner/repo")).toThrow("owner/repo")
+    expect(() => assertSafeSkillId("../nope")).toThrow("Skill id is invalid.")
+  })
+
+  test("builds global install and uninstall commands for the universal agent", () => {
+    expect(buildInstallSkillCommand("owner/repo", "my-skill").slice(1)).toEqual([
+      "skills",
+      "add",
+      "owner/repo",
+      "--skill",
+      "my-skill",
+      "--global",
+      "--agent",
+      "universal",
+      "--yes",
+    ])
+    expect(buildUninstallSkillCommand("my-skill").slice(1)).toEqual([
+      "skills",
+      "remove",
+      "my-skill",
+      "--global",
+      "--agent",
+      "universal",
+      "--yes",
+    ])
+  })
+
+  test("links installed skills into the Vision skills directory", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "vispark-skills-link-"))
+    const originalVisionConfigDir = process.env.Vision_CONFIG_DIR
+    try {
+      const lockFilePath = path.join(dir, ".skill-lock.json")
+      const sourcePath = path.join(getGlobalSkillsRoot(lockFilePath), "ui-helper")
+      await mkdir(sourcePath, { recursive: true })
+      await writeFile(path.join(sourcePath, "SKILL.md"), "---\nname: ui-helper\n---\n", "utf8")
+      process.env.Vision_CONFIG_DIR = path.join(dir, ".Vision")
+
+      const targetPath = await linkSkillIntoVision("ui-helper", lockFilePath)
+
+      expect(targetPath).toBe(path.join(dir, ".Vision", "skills", "ui-helper"))
+      expect(await readlink(targetPath)).toBe(sourcePath)
+    } finally {
+      if (originalVisionConfigDir === undefined) {
+        delete process.env.Vision_CONFIG_DIR
+      } else {
+        process.env.Vision_CONFIG_DIR = originalVisionConfigDir
+      }
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
 
 function withSidebarGroupDefaults(group: {
   groupKey: string
@@ -107,6 +235,49 @@ describe("ws-router", () => {
         v: PROTOCOL_VERSION,
         type: "ack",
         id: "ping-1",
+      },
+    ])
+  })
+
+  test("rejects unsafe skills.install commands before spawning the skills CLI", async () => {
+    const router = createWsRouter({
+      store: { state: createEmptyState() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "skills-install-1",
+        command: {
+          type: "skills.install",
+          source: "https://github.com/owner/repo",
+          skillId: "skill",
+        },
+      })
+    )
+
+    expect(ws.sent).toEqual([
+      {
+        v: PROTOCOL_VERSION,
+        type: "error",
+        id: "skills-install-1",
+        message: "Skill source must be an owner/repo pair.",
       },
     ])
   })

@@ -9,6 +9,55 @@ export type EditorPreset = "cursor" | "vscode" | "xcode" | "windsurf" | "custom"
 
 export type AttachmentKind = "image" | "file"
 
+export interface SkillSearchResult {
+  id: string
+  skillId: string
+  name: string
+  installs: number
+  source: string
+}
+
+export interface SkillSearchSnapshot {
+  query: string
+  searchType: string
+  skills: SkillSearchResult[]
+  count: number
+  duration_ms: number
+}
+
+export interface SkillInstallResult {
+  source: string
+  skillId: string
+  command: string[]
+  cwd: string
+  stdout: string
+  stderr: string
+}
+
+export interface SkillUninstallResult {
+  skillId: string
+  command: string[]
+  cwd: string
+  stdout: string
+  stderr: string
+}
+
+export interface InstalledSkillSummary {
+  name: string
+  source: string
+  sourceType: string
+  sourceUrl: string
+  skillPath?: string
+  installedAt: string
+  updatedAt: string
+  pluginName?: string
+}
+
+export interface InstalledSkillsSnapshot {
+  lockFilePath: string
+  skills: InstalledSkillSummary[]
+}
+
 export interface ChatAttachment {
   id: string
   kind: AttachmentKind

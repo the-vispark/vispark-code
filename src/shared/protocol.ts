@@ -74,6 +74,10 @@ export type ClientCommand =
   | { type: "settings.readKeybindings" }
   | { type: "settings.writeKeybindings"; bindings: KeybindingsSnapshot["bindings"] }
   | { type: "system.pickDirectory"; title?: string }
+  | { type: "skills.search"; query: string; limit?: number }
+  | { type: "skills.install"; source: string; skillId: string }
+  | { type: "skills.uninstall"; skillId: string }
+  | { type: "skills.listInstalled" }
   | {
       type: "system.openExternal"
       localPath: string

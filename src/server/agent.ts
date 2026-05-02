@@ -598,7 +598,7 @@ async function startVisionTurn(args: {
         : undefined,
       canUseTool,
       tools: [...VISION_TOOLSET],
-      settingSources: ["project", "local"],
+      settingSources: ["user", "project", "local"],
       env: { ...process.env },
       stderr: (data: string) => {
         console.error(`[Harness Stderr] ${data}`)
